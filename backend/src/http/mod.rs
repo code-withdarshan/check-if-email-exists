@@ -16,6 +16,7 @@
 
 pub(crate) mod csv;
 mod error;
+mod health;
 mod v0;
 mod v1;
 mod version;
@@ -38,6 +39,7 @@ pub fn create_routes(
 	let pg_pool = config.get_pg_pool();
 
 	version::get::get_version()
+		.or(health::get_health(Arc::clone(&config)))
 		.or(v0::check_email::post::post_check_email(Arc::clone(&config)))
 		// The 3 following routes will 404 if o is None.
 		.or(v0::bulk::post::create_bulk_job(

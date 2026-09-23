@@ -160,11 +160,16 @@ impl BackendConfig {
 				.hotmailb2b
 				.clone()
 				.unwrap_or_else(|| HotmailB2BVerifMethod::Smtp(default_smtp_config.clone())),
+			// Consumer Outlook and Yahoo default to SMTP. Their headless
+			// (password-recovery page) methods are opt-in via `overrides`:
+			// Yahoo's page was redesigned and Microsoft's now loads an
+			// anti-bot challenge, so headless checks hang until the request
+			// deadline and leave browser sessions running.
 			hotmailb2c: self
 				.overrides
 				.hotmailb2c
 				.clone()
-				.unwrap_or(HotmailB2CVerifMethod::Headless),
+				.unwrap_or_else(|| HotmailB2CVerifMethod::Smtp(default_smtp_config.clone())),
 			mimecast: self
 				.overrides
 				.mimecast
@@ -179,7 +184,7 @@ impl BackendConfig {
 				.overrides
 				.yahoo
 				.clone()
-				.unwrap_or(YahooVerifMethod::Headless),
+				.unwrap_or_else(|| YahooVerifMethod::Smtp(default_smtp_config.clone())),
 			everything_else: EverythingElseVerifMethod::Smtp(default_smtp_config),
 		}
 	}
@@ -433,6 +438,26 @@ mod tests {
 
 		env::remove_var("RCH__PROXY__HOST");
 		env::remove_var("RCH__PROXY__PORT");
+	}
+
+	#[test]
+	fn consumer_outlook_and_yahoo_default_to_smtp() {
+		let mut config = BackendConfig::empty();
+		config.hello_name = "example.org".into();
+
+		let verif_method = config.get_verif_method();
+		assert!(matches!(
+			verif_method.hotmailb2c,
+			HotmailB2CVerifMethod::Smtp(ref smtp) if smtp.hello_name == "example.org"
+		));
+		assert!(matches!(verif_method.yahoo, YahooVerifMethod::Smtp(_)));
+
+		// Headless stays available as an explicit override.
+		config.overrides.yahoo = Some(YahooVerifMethod::Headless);
+		assert!(matches!(
+			config.get_verif_method().yahoo,
+			YahooVerifMethod::Headless
+		));
 	}
 
 	#[test]

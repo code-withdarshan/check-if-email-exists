@@ -1,58 +1,96 @@
-version: "3.8"
+# Queue-based (RabbitMQ) deployment with two workers, built from this
+# repository's code. Run from the repo root:
+#
+#   REACHER_SECRET=<long-random-value> docker compose -f rabbitmq/docker-compose.yaml up -d --build
+#
+# All ports are bound to 127.0.0.1; put a TLS reverse proxy in front of the
+# workers to expose the API.
+
+# Only worker1 builds the image; other workers reuse it. Building it once per
+# worker would run identical heavy builds in parallel.
+x-worker: &worker
+    image: reacher-backend:local
+    depends_on:
+        postgres:
+            condition: service_healthy
+        rabbitmq:
+            condition: service_healthy
+    restart: always
+    healthcheck:
+        test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+        interval: 15s
+        timeout: 5s
+        retries: 3
+        start_period: 20s
+
+x-worker-env: &worker-env
+    RUST_LOG: reacher=info
+    RCH__HEADER_SECRET: ${REACHER_SECRET:?Set REACHER_SECRET to a long random value}
+    RCH__WORKER__ENABLE: true
+    RCH__WORKER__RABBITMQ__URL: amqp://guest:guest@rabbitmq:5672
+    RCH__STORAGE__POSTGRES__DB_URL: postgres://postgres:postgres@postgres:5432/reacher_db
+    RCH__THROTTLE__MAX_REQUESTS_PER_DAY: 10000 # Recommended limit per IP per day for SMTP requests
 
 services:
     rabbitmq:
         image: rabbitmq:4.0-management
         container_name: rabbitmq
         ports:
-            - "5672:5672"
-            - "15672:15672"
+            - "127.0.0.1:5672:5672"
+            - "127.0.0.1:15672:15672"
         environment:
             RABBITMQ_DEFAULT_USER: guest
             RABBITMQ_DEFAULT_PASS: guest
+        volumes:
+            - rabbitmq_data:/var/lib/rabbitmq
         restart: always
+        healthcheck:
+            test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+            interval: 10s
+            timeout: 10s
+            retries: 6
 
     postgres:
         image: postgres:14
         container_name: postgres
         ports:
-            - "5432:5432"
+            - "127.0.0.1:5432:5432"
         environment:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres
             POSTGRES_DB: reacher_db
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
         restart: always
+        healthcheck:
+            test: ["CMD", "pg_isready", "-U", "postgres", "-d", "reacher_db"]
+            interval: 10s
+            timeout: 5s
+            retries: 6
 
     worker1:
-        image: reacherhq/backend:beta
+        <<: *worker
+        build:
+            context: ..
+            dockerfile: backend/Dockerfile
         container_name: worker1
         ports:
-            - "8080:8080"
-        depends_on:
-            - postgres
-            - rabbitmq
+            - "127.0.0.1:8080:8080"
         environment:
+            <<: *worker-env
             RCH__BACKEND_NAME: worker1
-            RUST_LOG: reacher=info
-            RCH__WORKER__ENABLE: true
-            RCH__WORKER__RABBITMQ__URL: amqp://guest:guest@rabbitmq:5672
-            RCH__STORAGE__POSTGRES__DB_URL: postgres://postgres:postgres@postgres:5432/reacher_db
-            RCH__THROTTLE__MAX_REQUESTS_PER_DAY: 10000 # Recommended limit per IP per day for SMTP requests
-        restart: always
 
     worker2:
-        image: reacherhq/backend:beta
+        <<: *worker
+        # Uses the image built by worker1 rather than pulling it.
+        pull_policy: never
         container_name: worker2
         ports:
-            - "8081:8080"
-        depends_on:
-            - postgres
-            - rabbitmq
+            - "127.0.0.1:8081:8080"
         environment:
+            <<: *worker-env
             RCH__BACKEND_NAME: worker2
-            RUST_LOG: reacher=info
-            RCH__WORKER__ENABLE: true
-            RCH__WORKER__RABBITMQ__URL: amqp://guest:guest@rabbitmq:5672
-            RCH__STORAGE__POSTGRES__DB_URL: postgres://postgres:postgres@postgres:5432/reacher_db
-            RCH__THROTTLE__MAX_REQUESTS_PER_DAY: 10000 # Recommended limit per IP per day for SMTP requests
-        restart: always
+
+volumes:
+    rabbitmq_data:
+    postgres_data:

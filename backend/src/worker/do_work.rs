@@ -17,12 +17,14 @@
 use crate::config::BackendConfig;
 use crate::storage::commercial_license_trial::send_to_reacher;
 use crate::throttle::ThrottleResult;
+use crate::worker::consume::{CHECK_EMAIL_QUEUE, FAILED_QUEUE};
 use crate::worker::single_shot::send_single_shot_reply;
 use check_if_email_exists::{
 	check_email, CheckEmailInput, CheckEmailOutput, Reachable, LOG_TARGET,
 };
 use http::HeaderMap;
 use lapin::message::Delivery;
+use lapin::types::AMQPValue;
 use lapin::{options::*, Channel};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -128,9 +130,17 @@ const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
 const WEBHOOK_ATTEMPTS: u32 = 3;
 /// Base delay between webhook attempts; multiplied by the attempt number.
 const WEBHOOK_RETRY_DELAY: Duration = Duration::from_secs(2);
-/// Delay before a bulk task is requeued after a storage failure, so an
-/// unavailable database does not cause a tight retry loop.
+/// First delay before a bulk task is retried after a storage failure; it
+/// doubles on each attempt up to `MAX_STORAGE_RETRY_DELAY`, so an unavailable
+/// database does not cause a tight retry loop.
 const STORAGE_RETRY_DELAY: Duration = Duration::from_secs(5);
+const MAX_STORAGE_RETRY_DELAY: Duration = Duration::from_secs(60);
+/// Storage attempts (about 16 minutes with the delays above) before a bulk
+/// task is parked in `FAILED_QUEUE` instead of being retried again.
+const MAX_STORAGE_ATTEMPTS: i64 = 20;
+/// Message header counting storage attempts. RabbitMQ does not count
+/// redeliveries itself, so failed tasks are republished with this header.
+const STORAGE_ATTEMPTS_HEADER: &str = "x-reacher-storage-attempts";
 
 /// Processes the check email task asynchronously.
 pub(crate) async fn do_check_email_work(
@@ -180,11 +190,7 @@ pub(crate) async fn do_check_email_work(
 						send_single_shot_reply(channel, &delivery, &worker_output).await?;
 					}
 					CheckEmailJobId::Bulk(_) => {
-						tokio::time::sleep(STORAGE_RETRY_DELAY).await;
-						delivery
-							.reject(BasicRejectOptions { requeue: true })
-							.await?;
-						info!(target: LOG_TARGET, email=?&task.input.to_email, "Requeued message after storage failure");
+						retry_after_storage_failure(&delivery, &channel, task).await?;
 					}
 				}
 				return Err(e.into());
@@ -217,6 +223,68 @@ pub(crate) async fn do_check_email_work(
 		}
 	}
 
+	Ok(())
+}
+
+/// Number of storage attempts already recorded on a message.
+fn storage_attempts(delivery: &Delivery) -> i64 {
+	match delivery
+		.properties
+		.headers()
+		.as_ref()
+		.and_then(|headers| headers.inner().get(STORAGE_ATTEMPTS_HEADER))
+	{
+		Some(AMQPValue::LongLongInt(n)) => *n,
+		Some(AMQPValue::LongInt(n)) => i64::from(*n),
+		_ => 0,
+	}
+}
+
+/// Delay before the given (1-based) storage retry.
+fn storage_retry_delay(attempt: i64) -> Duration {
+	// Clamped, so the exponent always fits a u32 and cannot overflow.
+	let exponent = (attempt.clamp(1, 17) - 1) as u32;
+	STORAGE_RETRY_DELAY
+		.saturating_mul(2u32.pow(exponent))
+		.min(MAX_STORAGE_RETRY_DELAY)
+}
+
+/// After a storage failure, republishes a bulk task with an incremented
+/// attempt count (after a growing delay), or parks it in `FAILED_QUEUE` once
+/// `MAX_STORAGE_ATTEMPTS` is reached. The original message is acked only
+/// after the copy is published, so a failure here still redelivers it.
+async fn retry_after_storage_failure(
+	delivery: &Delivery,
+	channel: &Channel,
+	task: &CheckEmailTask,
+) -> Result<(), anyhow::Error> {
+	let attempt = storage_attempts(delivery) + 1;
+	let queue = if attempt >= MAX_STORAGE_ATTEMPTS {
+		error!(target: LOG_TARGET, email=?task.input.to_email, job_id=?task.job_id, attempt, queue=FAILED_QUEUE, "Storage kept failing, parking task");
+		FAILED_QUEUE
+	} else {
+		tokio::time::sleep(storage_retry_delay(attempt)).await;
+		CHECK_EMAIL_QUEUE
+	};
+
+	let mut headers = delivery.properties.headers().clone().unwrap_or_default();
+	headers.insert(
+		STORAGE_ATTEMPTS_HEADER.into(),
+		AMQPValue::LongLongInt(attempt),
+	);
+	channel
+		.basic_publish(
+			"",
+			queue,
+			BasicPublishOptions::default(),
+			&delivery.data,
+			delivery.properties.clone().with_headers(headers),
+		)
+		.await?
+		.await?;
+	delivery.ack(BasicAckOptions::default()).await?;
+
+	info!(target: LOG_TARGET, email=?task.input.to_email, attempt, queue, "Republished task after storage failure");
 	Ok(())
 }
 
@@ -296,6 +364,13 @@ mod tests {
 
 		let decoded: CheckEmailTask = serde_json::from_value(json).unwrap();
 		assert_eq!(decoded.task_id, None);
+	}
+
+	#[test]
+	fn storage_retry_delay_doubles_up_to_a_minute() {
+		let delays: Vec<u64> = (1..=6).map(|a| storage_retry_delay(a).as_secs()).collect();
+		assert_eq!(delays, vec![5, 10, 20, 40, 60, 60]);
+		assert_eq!(storage_retry_delay(i64::MAX), MAX_STORAGE_RETRY_DELAY);
 	}
 
 	#[tokio::test]

@@ -190,9 +190,10 @@ mod tests {
 		assert_eq!(smtp.smtp_timeout, Some(Duration::from_secs(9)));
 		assert_eq!(smtp.from_email, "sender@example.org");
 		assert_eq!(smtp.hello_name, "example.org");
-		assert!(matches!(
-			input.verif_method.yahoo,
-			YahooVerifMethod::Headless
-		));
+		// Yahoo defaults to SMTP, so the request overrides apply to it too.
+		let YahooVerifMethod::Smtp(yahoo) = input.verif_method.yahoo else {
+			panic!("Yahoo should default to SMTP");
+		};
+		assert_eq!(yahoo.smtp_port, 2525);
 	}
 }

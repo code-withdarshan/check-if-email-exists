@@ -54,10 +54,11 @@ Only set `UI_BIND=0.0.0.0` if HTTPS is already handled in front of the server.
 
 - Update after pulling new code: `docker compose up -d --build`.
 - Logs: `docker compose logs -f backend`.
+- Health: `docker compose ps` shows the backend as `healthy` once `GET /health` succeeds.
 - Stop: `docker compose down`.
 - Rate limits: `MAX_PER_MINUTE` and `MAX_PER_DAY` in `.env`. Keep them low on a single IP.
 
 ## Known limitations
 
-- Outlook, Hotmail and Yahoo checks currently time out (HTTP 504) and can leave Chrome processes running. Watch memory until that is fixed.
+- Outlook, Hotmail and Yahoo are checked over SMTP. Microsoft refuses IPs on the Spamhaus blocklist (which includes most home and many cloud IPs), and Yahoo requires the server's reverse DNS to match; otherwise these addresses come back `unknown`. The older browser-based checks are off by default because those pages changed.
 - If other people use this service, the AGPL-3.0 license requires publishing your modified source code.

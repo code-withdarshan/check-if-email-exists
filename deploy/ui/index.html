@@ -81,7 +81,7 @@
 
 	<div id="out"></div>
 
-	<p class="note">Most checks take 2–10 seconds. Outlook, Hotmail and Yahoo addresses are not supported yet and will time out. Limit: 10 checks per minute, 300 per day.</p>
+	<p class="note">Most checks take 2–10 seconds. Outlook, Hotmail and Yahoo addresses usually come back "unknown" from home internet connections, because those providers block home IP addresses. Limit: 10 checks per minute, 300 per day.</p>
 </main>
 
 <script>
@@ -122,7 +122,7 @@
 			if (!res.ok) {
 				let msg = text;
 				if (res.status === 429) msg = "Too many checks. Wait a minute and try again.";
-				else if (res.status === 504) msg = "The check took too long and was stopped. This happens with Outlook, Hotmail and Yahoo addresses.";
+				else if (res.status === 504) msg = "The check took too long and was stopped. Try again in a moment.";
 				else { try { msg = JSON.parse(text).error || text; } catch (_) {} }
 				out.innerHTML = `<div class="card error">Error ${res.status}: ${esc(msg)}</div>`;
 				return;

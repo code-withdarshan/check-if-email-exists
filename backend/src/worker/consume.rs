@@ -29,6 +29,9 @@ use tracing::{debug, error, info, trace};
 
 /// Our RabbitMQ only has one queue: "check_email".
 pub const CHECK_EMAIL_QUEUE: &str = "check_email";
+/// Bulk tasks whose result could not be stored after repeated attempts are
+/// parked here, unconsumed, for inspection or manual replay.
+pub const FAILED_QUEUE: &str = "check_email.failed";
 pub const MAX_QUEUE_PRIORITY: u8 = 5;
 
 /// Set up the RabbitMQ connection and declare the "check_email" queue.
@@ -67,6 +70,16 @@ pub async fn setup_rabbit_mq(
 				..Default::default()
 			},
 			queue_args.clone(),
+		)
+		.await?;
+	channel
+		.queue_declare(
+			FAILED_QUEUE,
+			QueueDeclareOptions {
+				durable: true,
+				..Default::default()
+			},
+			FieldTable::default(),
 		)
 		.await?;
 

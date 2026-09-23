@@ -106,8 +106,14 @@ webdriver_addr = "http://localhost:9515"
 # be verified using one of the following methods:
 # - Gmail: smtp
 # - Hotmail B2B: smtp
-# - Hotmail B2C: headless or smtp
-# - Yahoo: headless or smtp
+# - Hotmail B2C: smtp (default) or headless
+# - Yahoo: smtp (default), headless or api
+#
+# The headless methods drive Microsoft's and Yahoo's password-recovery pages
+# in Chrome. As of 2026-09 Yahoo's page was redesigned and Microsoft's loads an
+# anti-bot challenge, so they are not recommended. SMTP checks for these
+# providers need a clean IP: residential IPs are refused (Spamhaus), and Yahoo
+# also requires matching reverse DNS; otherwise the result is "unknown".
 # - Mimecast: smtp
 # - Proofpoint: smtp
 #
