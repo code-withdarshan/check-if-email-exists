@@ -36,6 +36,15 @@ use tracing::warn;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BackendConfig {
+	/// Deadline for verification and queue-backed HTTP calls, in seconds.
+	#[serde(default = "default_request_timeout")]
+	pub request_timeout: u64,
+	/// Maximum concurrent direct HTTP verifications.
+	#[serde(default = "default_max_concurrency")]
+	pub max_concurrency: usize,
+	#[serde(skip, default = "default_verification_slots")]
+	verification_slots: Arc<tokio::sync::Semaphore>,
+
 	/// Name of the backend.
 	pub backend_name: String,
 
@@ -94,6 +103,9 @@ impl BackendConfig {
 	/// Create an empty BackendConfig. This is useful for testing purposes.
 	pub fn empty() -> Self {
 		Self {
+			request_timeout: default_request_timeout(),
+			max_concurrency: default_max_concurrency(),
+			verification_slots: default_verification_slots(),
 			backend_name: "".to_string(),
 			webdriver_addr: "".to_string(),
 			webdriver: WebdriverConfig::default(),
@@ -193,7 +205,7 @@ impl BackendConfig {
 			Some(StorageConfig::Postgres(config)) => {
 				let storage = PostgresStorage::new(&config.db_url, config.extra.clone())
 					.await
-					.with_context(|| format!("Connecting to postgres DB {}", config.db_url))?;
+					.context("Connecting to PostgreSQL")?;
 
 				self.storage_adapter = Arc::new(StorageAdapter::Postgres(storage));
 			}
@@ -213,6 +225,7 @@ impl BackendConfig {
 		};
 		self.channel = channel;
 
+		self.verification_slots = Arc::new(tokio::sync::Semaphore::new(self.max_concurrency));
 		// Initialize throttle manager
 		self.throttle_manager = Arc::new(ThrottleManager::new(self.throttle.clone()));
 
@@ -230,6 +243,10 @@ impl BackendConfig {
 			StorageAdapter::Postgres(storage) => Some(storage.pg_pool.clone()),
 			StorageAdapter::Noop => None,
 		}
+	}
+
+	pub fn verification_slots(&self) -> Arc<tokio::sync::Semaphore> {
+		self.verification_slots.clone()
 	}
 
 	pub fn get_throttle_manager(&self) -> Arc<ThrottleManager> {
@@ -323,6 +340,18 @@ pub async fn load_config() -> Result<BackendConfig, anyhow::Error> {
 
 	let cfg = cfg.build()?.try_deserialize::<BackendConfig>()?;
 
+	if cfg.request_timeout == 0 || cfg.max_concurrency == 0 {
+		bail!("request_timeout and max_concurrency must be positive");
+	}
+	if cfg
+		.worker
+		.rabbitmq
+		.as_ref()
+		.map(|r| r.concurrency == 0)
+		.unwrap_or(false)
+	{
+		bail!("RabbitMQ concurrency must be positive");
+	}
 	// Perform additional checks
 
 	// 1. Make sure that if the worker is enabled, a Postgres database is configured.
@@ -545,4 +574,14 @@ db_url = "postgres://localhost:5432/test1"
 
 		assert_eq!(expected, toml::to_string(&storage_config).unwrap(),);
 	}
+}
+
+fn default_request_timeout() -> u64 {
+	120
+}
+fn default_max_concurrency() -> usize {
+	5
+}
+fn default_verification_slots() -> Arc<tokio::sync::Semaphore> {
+	Arc::new(tokio::sync::Semaphore::new(default_max_concurrency()))
 }

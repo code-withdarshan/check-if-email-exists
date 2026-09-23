@@ -160,10 +160,12 @@ async fn job_status(
 }
 
 pub fn get_bulk_job_status(
+	config: std::sync::Arc<crate::config::BackendConfig>,
 	o: Option<Pool<Postgres>>,
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
 	warp::path!("v0" / "bulk" / i32)
 		.and(warp::get())
+		.and(crate::http::check_header(config))
 		.and(with_db(o))
 		.and_then(job_status)
 		// View access logs by setting `RUST_LOG=reacher`.

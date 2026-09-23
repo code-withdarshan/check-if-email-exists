@@ -97,6 +97,23 @@ pub struct VerifMethod {
 }
 
 impl VerifMethod {
+	/// Apply request overrides only to providers configured to use SMTP.
+	pub fn smtp_configs_mut(&mut self) -> Vec<&mut VerifMethodSmtpConfig> {
+		let GmailVerifMethod::Smtp(gmail) = &mut self.gmail;
+		let HotmailB2BVerifMethod::Smtp(hotmail) = &mut self.hotmailb2b;
+		let MimecastVerifMethod::Smtp(mimecast) = &mut self.mimecast;
+		let ProofpointVerifMethod::Smtp(proofpoint) = &mut self.proofpoint;
+		let EverythingElseVerifMethod::Smtp(other) = &mut self.everything_else;
+		let mut configs = vec![gmail, hotmail, mimecast, proofpoint, other];
+		if let HotmailB2CVerifMethod::Smtp(c) = &mut self.hotmailb2c {
+			configs.push(c);
+		}
+		if let YahooVerifMethod::Smtp(c) = &mut self.yahoo {
+			configs.push(c);
+		}
+		configs
+	}
+
 	/// Create a new `VerifMethod` with the same configuration for all email
 	/// providers.
 	pub fn new_with_same_config_for_all(

@@ -5,6 +5,11 @@
 # Env variable: RCH__BACKEND_NAME
 backend_name = "backend-dev"
 
+# Total verification / queue reply deadline, in seconds (RCH__REQUEST_TIMEOUT).
+request_timeout = 120
+# Concurrent direct checks (RCH__MAX_CONCURRENCY).
+max_concurrency = 5
+
 # Host to bind the backend to.
 #
 # Env variable: RCH__HTTP_HOST
@@ -34,7 +39,7 @@ from_email = "hello@localhost"
 # `proxy.timeout_ms`.
 #
 # Env variable: RCH__SMTP_TIMEOUT
-# smtp_timeout = 45
+smtp_timeout = 45
 
 # Shared secret between a trusted client and the backend, required in the
 # `x-reacher-secret` header of all incoming requests.
@@ -176,9 +181,9 @@ webdriver_addr = "http://localhost:9515"
 # - RCH__THROTTLE__MAX_REQUESTS_PER_DAY
 [throttle]
 # max_requests_per_second = 20
-# max_requests_per_minute = 60
+max_requests_per_minute = 60
 # max_requests_per_hour = 1000
-# max_requests_per_day = 10000
+max_requests_per_day = 10000
 
 # Configuration for a queue-based architecture for Reacher. This feature is
 # currently in **beta**. The queue-based architecture allows Reacher to scale

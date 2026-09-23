@@ -119,12 +119,15 @@ pub fn initialize_crypto_provider() {
 /// ref: https://github.com/reacherhq/check-if-email-exists/issues/935
 fn calculate_reachable(misc: &MiscDetails, smtp: &Result<SmtpDetails, SmtpError>) -> Reachable {
 	if let Ok(smtp) = smtp {
+		// A full inbox is temporary; other explicit delivery failures take precedence.
+		if smtp.is_disabled
+			|| !smtp.can_connect_smtp
+			|| (!smtp.is_deliverable && !smtp.has_full_inbox)
+		{
+			return Reachable::Invalid;
+		}
 		if misc.is_disposable || misc.is_role_account || smtp.is_catch_all || smtp.has_full_inbox {
 			return Reachable::Risky;
-		}
-
-		if !smtp.is_deliverable || !smtp.can_connect_smtp || smtp.is_disabled {
-			return Reachable::Invalid;
 		}
 
 		Reachable::Safe
@@ -278,4 +281,34 @@ pub async fn check_email(input: &CheckEmailInput) -> CheckEmailOutput {
 	log_unknown_errors(&output, &input.backend_name);
 
 	output
+}
+
+#[cfg(test)]
+mod classification_tests {
+	use super::*;
+	#[test]
+	fn failed_role_mailbox_is_invalid_and_full_inbox_is_risky() {
+		let misc = MiscDetails {
+			is_role_account: true,
+			..Default::default()
+		};
+		let rejected = SmtpDetails {
+			can_connect_smtp: true,
+			is_deliverable: false,
+			..Default::default()
+		};
+		assert_eq!(
+			calculate_reachable(&misc, &Ok(rejected)),
+			Reachable::Invalid
+		);
+		let full = SmtpDetails {
+			can_connect_smtp: true,
+			has_full_inbox: true,
+			..Default::default()
+		};
+		assert_eq!(
+			calculate_reachable(&MiscDetails::default(), &Ok(full)),
+			Reachable::Risky
+		);
+	}
 }

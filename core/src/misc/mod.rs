@@ -105,6 +105,15 @@ mod tests {
 	use crate::{syntax::SyntaxDetails, EmailAddress};
 
 	#[tokio::test]
+	async fn disposable_address_has_valid_syntax_and_is_flagged() {
+		let syntax = crate::syntax::check_syntax("someone@mailinator.com");
+		assert!(syntax.is_valid_syntax);
+
+		let misc_details = check_misc(&syntax, false, None).await;
+		assert!(misc_details.is_disposable);
+	}
+
+	#[tokio::test]
 	async fn test_check_misc() {
 		let syntax = SyntaxDetails {
 			address: Some(EmailAddress::from_str("test@gmail.com").unwrap()),

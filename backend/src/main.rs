@@ -37,7 +37,7 @@ async fn main() -> Result<(), anyhow::Error> {
 	config.connect().await?;
 
 	// SECURITY: Don't log full config as it likely contains secrets (DB_URL, etc)
-	debug!(target: LOG_TARGET, "{:#?}", config.get_verif_method());
+	debug!(target: LOG_TARGET, "Verification configuration loaded");
 
 	// Setup sentry bug tracking.
 	let _guard: sentry::ClientInitGuard;

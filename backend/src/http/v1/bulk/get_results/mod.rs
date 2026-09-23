@@ -19,7 +19,7 @@
 use check_if_email_exists::LOG_TARGET;
 use csv::WriterBuilder;
 use serde::{Deserialize, Serialize};
-use sqlx::{Executor, PgPool, Row};
+use sqlx::{PgPool, Row};
 use std::iter::Iterator;
 use std::{convert::TryInto, sync::Arc};
 use warp::http::StatusCode;
@@ -59,6 +59,16 @@ async fn http_handler(
 	pg_pool: PgPool,
 	req: Request,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+	if req.limit == Some(0)
+		|| req.limit.unwrap_or(50) > 10_000
+		|| req.offset.unwrap_or(0) > i64::MAX as u64
+	{
+		return Err(ReacherResponseError::new(
+			StatusCode::BAD_REQUEST,
+			"limit must be 1..10000 and offset must fit a signed 64-bit integer",
+		)
+		.into());
+	}
 	// Throw an error if the job is still running.
 	// Is there a way to combine these 2 requests in one?
 	let total_records = sqlx::query!(
@@ -115,27 +125,13 @@ async fn job_result_as_iter(
 	offset: u64,
 	pg_pool: PgPool,
 ) -> Result<Box<dyn Iterator<Item = serde_json::Value>>, ReacherResponseError> {
-	let query = sqlx::query!(
-		r#"
-		SELECT result FROM v1_task_result
-		WHERE job_id = $1
-		ORDER BY id
-		LIMIT $2 OFFSET $3
-		"#,
-		job_id,
-		limit.map(|l| l as i64),
-		offset as i64
-	);
-
-	let rows = pg_pool
-		.fetch_all(query)
-		.await
-		.map_err(ReacherResponseError::from)?;
-
-	Ok(Box::new(
-		rows.into_iter()
-			.map(|row| row.get::<serde_json::Value, &str>("result")),
-	))
+	let rows = sqlx::query(
+        "SELECT payload, result, error FROM v1_task_result WHERE job_id = $1 ORDER BY id LIMIT $2 OFFSET $3"
+    ).bind(job_id).bind(limit.unwrap_or(10_000) as i64).bind(offset as i64)
+        .fetch_all(&pg_pool).await.map_err(ReacherResponseError::from)?;
+	Ok(Box::new(rows.into_iter().map(|row| {
+		export_result(row.get("payload"), row.get("result"), row.get("error"))
+	})))
 }
 
 async fn job_result_json(
@@ -181,9 +177,40 @@ pub fn v1_get_bulk_job_results(
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
 	warp::path!("v1" / "bulk" / i32 / "results")
 		.and(warp::get())
+		.and(crate::http::check_header(Arc::clone(&config)))
 		.and(with_worker_db(config))
 		.and(warp::query::<Request>())
 		.and_then(http_handler)
 		// View access logs by setting `RUST_LOG=reacher_backend`.
 		.with(warp::log(LOG_TARGET))
+}
+
+fn export_result(
+	payload: serde_json::Value,
+	result: Option<serde_json::Value>,
+	error: Option<String>,
+) -> serde_json::Value {
+	result.unwrap_or_else(|| {
+		serde_json::json!({
+			"input": payload.pointer("/input/to_email").and_then(|v| v.as_str()).unwrap_or(""),
+			"is_reachable": "unknown",
+			"error": error.unwrap_or_else(|| "Verification failed".to_string())
+		})
+	})
+}
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::convert::TryFrom;
+	#[test]
+	fn exports_failed_database_rows_without_unwrapping_null() {
+		let value = export_result(
+			serde_json::json!({"input":{"to_email":"test@example.org"}}),
+			None,
+			Some("timeout".into()),
+		);
+		assert_eq!(value["input"], "test@example.org");
+		assert_eq!(value["error"], "timeout");
+		CsvResponse::try_from(CsvWrapper(value)).unwrap();
+	}
 }

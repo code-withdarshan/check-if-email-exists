@@ -70,24 +70,27 @@ In your own Rust project, you can add `check-if-email-exists` in your `Cargo.tom
 
 ```toml
 [dependencies]
-check-if-email-exists = "0.9"
+check-if-email-exists = "0.11"
 ```
 
 And use it in your code as follows:
 
 ```rust
-use check_if_email_exists::{check_email, CheckEmailInput, CheckEmailInputProxy};
+use check_if_email_exists::{check_email, CheckEmailInputBuilder};
 
-async fn check() {
+async fn check() -> Result<(), Box<dyn std::error::Error>> {
     // Let's say we want to test the deliverability of someone@gmail.com.
-    let mut input = CheckEmailInput::new(vec!["someone@gmail.com".into()]);
+    let input = CheckEmailInputBuilder::default()
+        .to_email("someone@gmail.com".into())
+        .build()?;
 
     // Verify this email, using async/await syntax.
     let result = check_email(&input).await;
 
-    // `result` is a `Vec<CheckEmailOutput>`, where the CheckEmailOutput
-    // struct contains all information about our email.
+    // `result` is a `CheckEmailOutput`, which contains all information
+    // about our email.
     println!("{:?}", result);
+    Ok(())
 }
 ```
 

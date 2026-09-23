@@ -40,15 +40,19 @@ use crate::worker::single_shot::SingleShotReply;
 async fn handle_without_worker(
 	config: Arc<BackendConfig>,
 	body: &CheckEmailRequest,
-	throttle_manager: &crate::throttle::ThrottleManager,
 ) -> Result<Vec<u8>, warp::Rejection> {
+	// Bound concurrent direct verifications; waiting counts against the
+	// request deadline applied by the caller.
+	let _permit = config
+		.verification_slots()
+		.acquire_owned()
+		.await
+		.map_err(|e| ReacherResponseError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+
 	info!(target: LOG_TARGET, email=body.to_email, "Starting verification");
 	let input = body.to_check_email_input(Arc::clone(&config));
 	let result = check_email(&input).await;
 	let result_ok = Ok(result);
-
-	// Increment counters after successful verification
-	throttle_manager.increment_counters().await;
 
 	// Store the result regardless of how we got it
 	let storage = Arc::clone(&config).get_storage_adapter();
@@ -194,9 +198,9 @@ async fn http_handler(
 		.into());
 	}
 
-	// Check throttle regardless of worker mode
-	let throttle_manager = config.get_throttle_manager();
-	if let Some(throttle_result) = throttle_manager.check_throttle().await {
+	// Reserve throttle capacity atomically, regardless of worker mode, so
+	// concurrent requests cannot all pass the same limit check.
+	if let Err(throttle_result) = config.get_throttle_manager().try_acquire().await {
 		return Err(ReacherResponseError::new(
 			http::StatusCode::TOO_MANY_REQUESTS,
 			format!(
@@ -207,11 +211,20 @@ async fn http_handler(
 		.into());
 	}
 
-	let result_bz = if !config.worker.enable {
-		handle_without_worker(Arc::clone(&config), &body, &throttle_manager).await?
-	} else {
-		handle_with_worker(Arc::clone(&config), &body).await?
+	let deadline = std::time::Duration::from_secs(config.request_timeout);
+	let work = async {
+		if !config.worker.enable {
+			handle_without_worker(Arc::clone(&config), &body).await
+		} else {
+			handle_with_worker(Arc::clone(&config), &body).await
+		}
 	};
+	let result_bz = tokio::time::timeout(deadline, work).await.map_err(|_| {
+		ReacherResponseError::new(
+			http::StatusCode::GATEWAY_TIMEOUT,
+			format!("Verification did not complete within {:?}", deadline),
+		)
+	})??;
 
 	Ok(warp::reply::with_header(
 		result_bz,

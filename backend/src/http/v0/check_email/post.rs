@@ -57,12 +57,11 @@ impl CheckEmailRequest {
 		let smtp_port = self.smtp_port.unwrap_or(25);
 		let retries = 1;
 
-		// The current behavior is a bit complex. If the proxy field is present,
+		// A request proxy replaces the default SMTP proxy. If the proxy field is present,
 		// we force use the proxy for all the verifications. If the proxy field is
 		// not present, we use the default configuration for all the verifications.
 		//
-		// If the proxy field is unset, but one of the other fields (from_email,
-		// hello_name, smtp_timeout, smtp_port) is set, we ignore those fields.
+		// Explicit SMTP fields override provider defaults independently of proxy selection.
 		let mut verif_method = if let Some(proxy) = &self.proxy {
 			VerifMethod::new_with_same_config_for_all(
 				Some(proxy.clone()),
@@ -76,6 +75,20 @@ impl CheckEmailRequest {
 			config.get_verif_method()
 		};
 
+		for smtp in verif_method.smtp_configs_mut() {
+			if let Some(value) = &self.from_email {
+				smtp.from_email = value.clone();
+			}
+			if let Some(value) = &self.hello_name {
+				smtp.hello_name = value.clone();
+			}
+			if let Some(value) = self.smtp_timeout {
+				smtp.smtp_timeout = Some(value);
+			}
+			if let Some(value) = self.smtp_port {
+				smtp.smtp_port = value;
+			}
+		}
 		// Also support backward compatibility of the *_verif_method fields, which
 		// override the verif_method.
 		if let Some(yahoo_verif_method) = &self.yahoo_verif_method {
@@ -105,6 +118,7 @@ impl CheckEmailRequest {
 			sentry_dsn: config.sentry_dsn.clone(),
 			backend_name: config.backend_name.clone(),
 			webdriver_config: config.webdriver.clone(),
+			webdriver_addr: config.webdriver_addr.clone(),
 			..Default::default()
 		}
 	}
@@ -151,4 +165,34 @@ pub fn with_config(
 	config: Arc<BackendConfig>,
 ) -> impl Filter<Extract = (Arc<BackendConfig>,), Error = std::convert::Infallible> + Clone {
 	warp::any().map(move || Arc::clone(&config))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use check_if_email_exists::smtp::verif_method::{GmailVerifMethod, YahooVerifMethod};
+	#[test]
+	fn forwards_webdriver_and_smtp_overrides_without_proxy() {
+		let mut config = BackendConfig::empty();
+		config.webdriver_addr = "http://webdriver:9515".into();
+		let request = CheckEmailRequest {
+			to_email: "test@example.org".into(),
+			smtp_port: Some(2525),
+			smtp_timeout: Some(Duration::from_secs(9)),
+			from_email: Some("sender@example.org".into()),
+			hello_name: Some("example.org".into()),
+			..Default::default()
+		};
+		let input = request.to_check_email_input(Arc::new(config));
+		assert_eq!(input.webdriver_addr, "http://webdriver:9515");
+		let GmailVerifMethod::Smtp(smtp) = input.verif_method.gmail;
+		assert_eq!(smtp.smtp_port, 2525);
+		assert_eq!(smtp.smtp_timeout, Some(Duration::from_secs(9)));
+		assert_eq!(smtp.from_email, "sender@example.org");
+		assert_eq!(smtp.hello_name, "example.org");
+		assert!(matches!(
+			input.verif_method.yahoo,
+			YahooVerifMethod::Headless
+		));
+	}
 }

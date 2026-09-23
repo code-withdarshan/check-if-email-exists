@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub(crate) mod csv;
 mod error;
 mod v0;
 mod v1;
@@ -43,8 +44,14 @@ pub fn create_routes(
 			Arc::clone(&config),
 			pg_pool.clone(),
 		))
-		.or(v0::bulk::get::get_bulk_job_status(pg_pool.clone()))
-		.or(v0::bulk::results::get_bulk_job_result(pg_pool))
+		.or(v0::bulk::get::get_bulk_job_status(
+			Arc::clone(&config),
+			pg_pool.clone(),
+		))
+		.or(v0::bulk::results::get_bulk_job_result(
+			Arc::clone(&config),
+			pg_pool,
+		))
 		.or(v1::check_email::post::v1_check_email(Arc::clone(&config)))
 		.or(v1::bulk::post::v1_create_bulk_job(Arc::clone(&config)))
 		.or(v1::bulk::get_progress::v1_get_bulk_job_progress(

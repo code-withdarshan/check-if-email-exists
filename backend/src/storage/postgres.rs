@@ -29,7 +29,7 @@ pub struct PostgresStorage {
 
 impl PostgresStorage {
 	pub async fn new(db_url: &str, extra: Option<serde_json::Value>) -> Result<Self, StorageError> {
-		debug!(target: LOG_TARGET, "Connecting to DB: {}", db_url);
+		debug!(target: LOG_TARGET, "Connecting to PostgreSQL");
 		// create connection pool with database
 		// connection pool internally the shared db connection
 		// with arc so it can safely be cloned and shared across threads

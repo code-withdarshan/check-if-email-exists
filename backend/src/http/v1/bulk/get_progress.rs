@@ -150,6 +150,7 @@ pub fn v1_get_bulk_job_progress(
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
 	warp::path!("v1" / "bulk" / i32)
 		.and(warp::get())
+		.and(crate::http::check_header(Arc::clone(&config)))
 		.and(with_worker_db(config))
 		.and_then(http_handler)
 		// View access logs by setting `RUST_LOG=reacher`.

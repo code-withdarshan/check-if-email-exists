@@ -137,7 +137,8 @@ impl Throttle {
 		if let Some(max_per_second) = config.max_requests_per_second {
 			if self.requests_per_second >= max_per_second {
 				return Some(ThrottleResult {
-					delay: Duration::from_secs(1) - now.duration_since(self.last_reset_second),
+					delay: Duration::from_secs(1)
+						.saturating_sub(now.duration_since(self.last_reset_second)),
 					limit_type: ThrottleLimit::PerSecond,
 				});
 			}
@@ -146,7 +147,8 @@ impl Throttle {
 		if let Some(max_per_minute) = config.max_requests_per_minute {
 			if self.requests_per_minute >= max_per_minute {
 				return Some(ThrottleResult {
-					delay: Duration::from_secs(60) - now.duration_since(self.last_reset_minute),
+					delay: Duration::from_secs(60)
+						.saturating_sub(now.duration_since(self.last_reset_minute)),
 					limit_type: ThrottleLimit::PerMinute,
 				});
 			}
@@ -155,7 +157,8 @@ impl Throttle {
 		if let Some(max_per_hour) = config.max_requests_per_hour {
 			if self.requests_per_hour >= max_per_hour {
 				return Some(ThrottleResult {
-					delay: Duration::from_secs(3600) - now.duration_since(self.last_reset_hour),
+					delay: Duration::from_secs(3600)
+						.saturating_sub(now.duration_since(self.last_reset_hour)),
 					limit_type: ThrottleLimit::PerHour,
 				});
 			}
@@ -164,7 +167,8 @@ impl Throttle {
 		if let Some(max_per_day) = config.max_requests_per_day {
 			if self.requests_per_day >= max_per_day {
 				return Some(ThrottleResult {
-					delay: Duration::from_secs(86400) - now.duration_since(self.last_reset_day),
+					delay: Duration::from_secs(86400)
+						.saturating_sub(now.duration_since(self.last_reset_day)),
 					limit_type: ThrottleLimit::PerDay,
 				});
 			}
@@ -181,6 +185,17 @@ pub struct ThrottleManager {
 }
 
 impl ThrottleManager {
+	/// Reserve capacity while holding the same lock as the limit check.
+	pub async fn try_acquire(&self) -> Result<(), ThrottleResult> {
+		let mut throttle = self.inner.lock().await;
+		throttle.reset_if_needed();
+		if let Some(limit) = throttle.should_throttle(&self.config) {
+			return Err(limit);
+		}
+		throttle.increment_counters();
+		Ok(())
+	}
+
 	pub fn new(config: ThrottleConfig) -> Self {
 		Self {
 			inner: Arc::new(Mutex::new(Throttle::new())),
@@ -235,5 +250,31 @@ mod tests {
 
 		// Should allow more requests
 		assert_eq!(manager.check_throttle().await, None);
+	}
+}
+
+#[cfg(test)]
+mod concurrent_tests {
+	use super::*;
+	#[tokio::test]
+	async fn concurrent_admission_never_exceeds_capacity() {
+		let manager = Arc::new(ThrottleManager::new(ThrottleConfig {
+			max_requests_per_day: Some(7),
+			..Default::default()
+		}));
+		let mut tasks = Vec::new();
+		for _ in 0..100 {
+			let manager = manager.clone();
+			tasks.push(tokio::spawn(
+				async move { manager.try_acquire().await.is_ok() },
+			));
+		}
+		let mut accepted = 0;
+		for task in tasks {
+			if task.await.unwrap() {
+				accepted += 1;
+			}
+		}
+		assert_eq!(accepted, 7);
 	}
 }

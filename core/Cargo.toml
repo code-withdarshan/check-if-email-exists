@@ -20,6 +20,7 @@ chrono = { version = "0.4.31", features = ["serde"] }
 config = "0.14"
 derive_builder = "0.20"
 fast-socks5 = "0.9"
+fast_chemail = "0.9.6"
 fantoccini = { version = "0.21.2", default-features = false, features = [
     "rustls-tls",
 ] }
