@@ -44,6 +44,9 @@ pub struct BackendConfig {
 	pub max_concurrency: usize,
 	#[serde(skip, default = "default_verification_slots")]
 	verification_slots: Arc<tokio::sync::Semaphore>,
+	/// Maximum number of emails accepted in one `POST /v1/bulk` job.
+	#[serde(default = "default_max_bulk_emails")]
+	pub max_bulk_emails: usize,
 
 	/// Name of the backend.
 	pub backend_name: String,
@@ -106,6 +109,7 @@ impl BackendConfig {
 			request_timeout: default_request_timeout(),
 			max_concurrency: default_max_concurrency(),
 			verification_slots: default_verification_slots(),
+			max_bulk_emails: default_max_bulk_emails(),
 			backend_name: "".to_string(),
 			webdriver_addr: "".to_string(),
 			webdriver: WebdriverConfig::default(),
@@ -340,8 +344,8 @@ pub async fn load_config() -> Result<BackendConfig, anyhow::Error> {
 
 	let cfg = cfg.build()?.try_deserialize::<BackendConfig>()?;
 
-	if cfg.request_timeout == 0 || cfg.max_concurrency == 0 {
-		bail!("request_timeout and max_concurrency must be positive");
+	if cfg.request_timeout == 0 || cfg.max_concurrency == 0 || cfg.max_bulk_emails == 0 {
+		bail!("request_timeout, max_concurrency and max_bulk_emails must be positive");
 	}
 	if cfg
 		.worker
@@ -584,4 +588,7 @@ fn default_max_concurrency() -> usize {
 }
 fn default_verification_slots() -> Arc<tokio::sync::Semaphore> {
 	Arc::new(tokio::sync::Semaphore::new(default_max_concurrency()))
+}
+fn default_max_bulk_emails() -> usize {
+	10_000
 }

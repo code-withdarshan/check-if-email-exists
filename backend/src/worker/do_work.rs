@@ -29,8 +29,9 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use warp::http::StatusCode;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -121,6 +122,16 @@ struct WebhookOutput<'a> {
 	extra: &'a Option<serde_json::Value>,
 }
 
+/// Maximum time for one webhook request.
+const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Webhook delivery attempts before giving up.
+const WEBHOOK_ATTEMPTS: u32 = 3;
+/// Base delay between webhook attempts; multiplied by the attempt number.
+const WEBHOOK_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Delay before a bulk task is requeued after a storage failure, so an
+/// unavailable database does not cause a tight retry loop.
+const STORAGE_RETRY_DELAY: Duration = Duration::from_secs(5);
+
 /// Processes the check email task asynchronously.
 pub(crate) async fn do_check_email_work(
 	task: &CheckEmailTask,
@@ -128,7 +139,10 @@ pub(crate) async fn do_check_email_work(
 	channel: Arc<Channel>,
 	config: Arc<BackendConfig>,
 ) -> Result<(), anyhow::Error> {
-	let worker_output = check_email_and_send_result(task).await;
+	// The webhook is sent only once the final result is stored (below), so a
+	// retried verification does not notify twice, and a webhook failure does
+	// not re-run the verification.
+	let worker_output: Result<CheckEmailOutput, TaskError> = Ok(check_email(&task.input).await);
 
 	match (&worker_output, delivery.redelivered) {
 		(Ok(output), false) if output.is_reachable == Reachable::Unknown => {
@@ -166,6 +180,7 @@ pub(crate) async fn do_check_email_work(
 						send_single_shot_reply(channel, &delivery, &worker_output).await?;
 					}
 					CheckEmailJobId::Bulk(_) => {
+						tokio::time::sleep(STORAGE_RETRY_DELAY).await;
 						delivery
 							.reject(BasicRejectOptions { requeue: true })
 							.await?;
@@ -179,6 +194,14 @@ pub(crate) async fn do_check_email_work(
 
 			if let CheckEmailJobId::SingleShot = task.job_id {
 				send_single_shot_reply(channel, &delivery, &worker_output).await?;
+			}
+
+			// The result is safely stored, so a webhook failure is logged
+			// rather than failing (and retrying) the task.
+			if let Ok(output) = &worker_output {
+				if let Err(e) = send_webhook(task, output).await {
+					error!(target: LOG_TARGET, email=?task.input.to_email, job_id=?task.job_id, error=%e, "Webhook delivery failed");
+				}
 			}
 
 			// If we're in the Commercial License Trial, we also store the
@@ -197,37 +220,63 @@ pub(crate) async fn do_check_email_work(
 	Ok(())
 }
 
-/// Checks the email and sends the result to the webhook.
+/// Checks the email and sends the result to the webhook. Used by the SQS
+/// handler; the RabbitMQ worker sends the webhook after storing instead.
 pub async fn check_email_and_send_result(
 	task: &CheckEmailTask,
 ) -> Result<CheckEmailOutput, TaskError> {
 	let output = check_email(&task.input).await;
+	send_webhook(task, &output).await?;
+	Ok(output)
+}
 
-	// Check if we have a webhook to send the output to.
-	if let Some(TaskWebhook {
+/// Sends a result to the task's `on_each_email` webhook, if any. Each attempt
+/// has a timeout, non-2xx responses count as failures, and failures are
+/// retried with a growing delay. The `x-reacher-task-id` header lets the
+/// receiver discard duplicate deliveries.
+pub async fn send_webhook(
+	task: &CheckEmailTask,
+	output: &CheckEmailOutput,
+) -> Result<(), TaskError> {
+	let Some(TaskWebhook {
 		on_each_email: Some(webhook),
 	}) = &task.webhook
-	{
-		let webhook_output = WebhookOutput {
-			result: &output,
-			extra: &webhook.extra,
-		};
+	else {
+		return Ok(());
+	};
 
-		let headers: HeaderMap = (&webhook.headers).try_into()?;
+	let webhook_output = WebhookOutput {
+		result: output,
+		extra: &webhook.extra,
+	};
+	let headers: HeaderMap = (&webhook.headers).try_into()?;
+	let client = reqwest::Client::builder()
+		.timeout(WEBHOOK_TIMEOUT)
+		.build()?;
 
-		let client = reqwest::Client::new();
-		let res = client
+	let mut attempt = 1;
+	loop {
+		let mut request = client
 			.post(&webhook.url)
 			.json(&webhook_output)
-			.headers(headers)
-			.send()
-			.await?
-			.text()
-			.await?;
-		debug!(target: LOG_TARGET, email=?webhook_output.result.input,res=?res, "Received webhook response");
-	}
+			.headers(headers.clone());
+		if let Some(task_id) = task.task_id {
+			request = request.header("x-reacher-task-id", task_id.to_string());
+		}
 
-	Ok(output)
+		match request.send().await.and_then(|res| res.error_for_status()) {
+			Ok(res) => {
+				debug!(target: LOG_TARGET, email=?output.input, status=%res.status(), attempt, "Webhook delivered");
+				return Ok(());
+			}
+			Err(e) if attempt < WEBHOOK_ATTEMPTS => {
+				debug!(target: LOG_TARGET, email=?output.input, error=%e, attempt, "Webhook attempt failed, retrying");
+				tokio::time::sleep(WEBHOOK_RETRY_DELAY * attempt).await;
+				attempt += 1;
+			}
+			Err(e) => return Err(e.into()),
+		}
+	}
 }
 
 #[cfg(test)]
@@ -247,5 +296,54 @@ mod tests {
 
 		let decoded: CheckEmailTask = serde_json::from_value(json).unwrap();
 		assert_eq!(decoded.task_id, None);
+	}
+
+	#[tokio::test]
+	async fn webhook_retries_failed_status_and_sends_task_id() {
+		use std::sync::atomic::{AtomicUsize, Ordering};
+		use std::sync::Mutex;
+		use warp::Filter;
+
+		// Fails the first request with 500, accepts the second.
+		let hits = Arc::new(AtomicUsize::new(0));
+		let seen_ids = Arc::new(Mutex::new(Vec::new()));
+		let route = warp::post()
+			.and(warp::header::optional::<String>("x-reacher-task-id"))
+			.map({
+				let (hits, seen_ids) = (hits.clone(), seen_ids.clone());
+				move |task_id: Option<String>| {
+					seen_ids.lock().unwrap().push(task_id);
+					let status = if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+						StatusCode::INTERNAL_SERVER_ERROR
+					} else {
+						StatusCode::OK
+					};
+					warp::reply::with_status("", status)
+				}
+			});
+		let (addr, server) = warp::serve(route).bind_ephemeral(([127, 0, 0, 1], 0));
+		tokio::spawn(server);
+
+		let task_id = uuid::Uuid::new_v4();
+		let task = CheckEmailTask {
+			input: CheckEmailInput::default(),
+			job_id: CheckEmailJobId::Bulk(1),
+			webhook: Some(TaskWebhook {
+				on_each_email: Some(Webhook {
+					url: format!("http://{addr}/"),
+					headers: HashMap::new(),
+					extra: None,
+				}),
+			}),
+			task_id: Some(task_id),
+		};
+
+		send_webhook(&task, &CheckEmailOutput::default())
+			.await
+			.unwrap();
+
+		assert_eq!(hits.load(Ordering::SeqCst), 2);
+		let expected = Some(task_id.to_string());
+		assert_eq!(*seen_ids.lock().unwrap(), vec![expected.clone(), expected]);
 	}
 }

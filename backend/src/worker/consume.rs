@@ -24,6 +24,7 @@ use futures::stream::StreamExt;
 use lapin::{options::*, types::FieldTable, Channel, Connection, ConnectionProperties};
 use sentry_anyhow::capture_anyhow;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{debug, error, info, trace};
 
 /// Our RabbitMQ only has one queue: "check_email".
@@ -90,14 +91,24 @@ pub async fn run_worker(config: Arc<BackendConfig>) -> Result<(), anyhow::Error>
 	consume_check_email(config).await
 }
 
+/// Longest wait before a throttled bulk task is requeued. Waiting avoids a
+/// tight reject/redeliver loop; capping it keeps the worker responsive to
+/// single-shot requests, which are answered with 429 immediately.
+const MAX_THROTTLE_WAIT: Duration = Duration::from_secs(10);
+
 /// Consume "check_email" queue.
+///
+/// This future only resolves if consumption stops. It is awaited by `main`
+/// alongside the HTTP server, so a dead consumer stops the process (and lets
+/// a supervisor such as Docker restart it) instead of leaving the HTTP server
+/// accepting jobs that no worker will process.
 async fn consume_check_email(config: Arc<BackendConfig>) -> Result<(), anyhow::Error> {
 	let config_clone = Arc::clone(&config);
 	let worker_config = config_clone.must_worker_config()?;
 	let channel = worker_config.channel;
 	let throttle = config.get_throttle_manager();
 
-	tokio::spawn(async move {
+	{
 		let mut consumer = channel
 			.basic_consume(
 				CHECK_EMAIL_QUEUE,
@@ -109,8 +120,19 @@ async fn consume_check_email(config: Arc<BackendConfig>) -> Result<(), anyhow::E
 
 		// Loop over the incoming messages
 		while let Some(delivery) = consumer.next().await {
-			let delivery = delivery?;
-			let payload = serde_json::from_slice::<CheckEmailTask>(&delivery.data)?;
+			let delivery = delivery.context("Receiving from RabbitMQ")?;
+			let payload = match serde_json::from_slice::<CheckEmailTask>(&delivery.data) {
+				Ok(payload) => payload,
+				Err(e) => {
+					// A message that can never be decoded would otherwise be
+					// redelivered forever; drop it and keep consuming.
+					error!(target: LOG_TARGET, error=%e, "Dropping malformed message");
+					delivery
+						.reject(BasicRejectOptions { requeue: false })
+						.await?;
+					continue;
+				}
+			};
 			debug!(target: LOG_TARGET, email=?payload.input.to_email, "Consuming message");
 
 			// Reserve throttle capacity atomically before starting the task.
@@ -136,8 +158,10 @@ async fn consume_check_email(config: Arc<BackendConfig>) -> Result<(), anyhow::E
 						.await?;
 					}
 					CheckEmailJobId::Bulk(_) => {
-						// Put back the message into the same queue, so that other
-						// workers can pick it up.
+						// Wait (bounded) for capacity, then put the message
+						// back into the same queue, so that other workers can
+						// pick it up.
+						tokio::time::sleep(throttle_result.delay.min(MAX_THROTTLE_WAIT)).await;
 						delivery
 							.reject(BasicRejectOptions { requeue: true })
 							.await?;
@@ -171,9 +195,7 @@ async fn consume_check_email(config: Arc<BackendConfig>) -> Result<(), anyhow::E
 				}
 			});
 		}
+	}
 
-		Ok::<(), anyhow::Error>(())
-	});
-
-	Ok(())
+	anyhow::bail!("RabbitMQ consumer stopped")
 }

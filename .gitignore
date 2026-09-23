@@ -13,3 +13,6 @@ hotmail.jpeg
 /test_suite/src/sensitive_fixtures/*.json
 run.sh
 .env
+
+# deploy/: web page login file (see deploy/README.md)
+deploy/htpasswd

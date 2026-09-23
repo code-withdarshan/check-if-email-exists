@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n\t\tSELECT\n\t\t\tCOUNT(*) as total_processed,\n\t\t\tCOUNT(CASE WHEN result ->> 'is_reachable' LIKE 'safe' THEN 1 END) as safe_count,\n\t\t\tCOUNT(CASE WHEN result ->> 'is_reachable' LIKE 'risky' THEN 1 END) as risky_count,\n\t\t\tCOUNT(CASE WHEN result ->> 'is_reachable' LIKE 'invalid' THEN 1 END) as invalid_count,\n\t\t\tCOUNT(CASE WHEN result ->> 'is_reachable' LIKE 'unknown' THEN 1 END) as unknown_count,\n\t\t\t(SELECT created_at FROM v1_task_result WHERE job_id = $1 ORDER BY created_at DESC LIMIT 1) as finished_at\n\t\tFROM v1_task_result\n\t\tWHERE job_id = $1\n\t\t",
+  "query": "\n\t\tSELECT\n\t\t\tCOUNT(*) as total_processed,\n\t\t\tCOUNT(CASE WHEN result ->> 'is_reachable' LIKE 'safe' THEN 1 END) as safe_count,\n\t\t\tCOUNT(CASE WHEN result ->> 'is_reachable' LIKE 'risky' THEN 1 END) as risky_count,\n\t\t\tCOUNT(CASE WHEN result ->> 'is_reachable' LIKE 'invalid' THEN 1 END) as invalid_count,\n\t\t\t-- Failed tasks have no result; they are exported as unknown too.\n\t\t\tCOUNT(CASE WHEN result IS NULL OR result ->> 'is_reachable' LIKE 'unknown' THEN 1 END) as unknown_count,\n\t\t\t(SELECT created_at FROM v1_task_result WHERE job_id = $1 ORDER BY created_at DESC LIMIT 1) as finished_at\n\t\tFROM v1_task_result\n\t\tWHERE job_id = $1\n\t\t",
   "describe": {
     "columns": [
       {
@@ -48,5 +48,5 @@
       null
     ]
   },
-  "hash": "d682d43a07f3969bcb3113ae3600766e9197d48bdc7ccb73a53c938cb45f910f"
+  "hash": "16ac45659a003469883af2a06b27aceb25e18fc4f25aca7e70fd686c11aeec62"
 }

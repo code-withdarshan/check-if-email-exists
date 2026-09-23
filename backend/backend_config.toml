@@ -9,6 +9,8 @@ backend_name = "backend-dev"
 request_timeout = 120
 # Concurrent direct checks (RCH__MAX_CONCURRENCY).
 max_concurrency = 5
+# Maximum emails in one POST /v1/bulk job (RCH__MAX_BULK_EMAILS).
+max_bulk_emails = 10000
 
 # Host to bind the backend to.
 #

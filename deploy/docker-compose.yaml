@@ -1,0 +1,41 @@
+# Single-server deployment: the verification backend plus a login-protected
+# web page. See deploy/README.md for setup.
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    image: reacher-backend:local
+    restart: unless-stopped
+    environment:
+      RCH__HEADER_SECRET: ${REACHER_SECRET:?Set REACHER_SECRET in deploy/.env}
+      RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: ${MAX_PER_MINUTE:-10}
+      RCH__THROTTLE__MAX_REQUESTS_PER_DAY: ${MAX_PER_DAY:-300}
+      RUST_LOG: reacher=info
+    # Not published: only the web page talks to it, over the compose network.
+
+  ui:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      REACHER_SECRET: ${REACHER_SECRET:?Set REACHER_SECRET in deploy/.env}
+    volumes:
+      - ./ui/index.html:/usr/share/nginx/html/index.html:ro
+      - ./ui/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./htpasswd:/etc/nginx/htpasswd:ro
+    ports:
+      # Localhost only by default; put HTTPS in front (Cloudflare Tunnel or a
+      # reverse proxy) rather than exposing plain HTTP with a password.
+      - "${UI_BIND:-127.0.0.1}:${UI_PORT:-8090}:80"
+
+  # Optional: `docker compose --profile tunnel up -d` adds a Cloudflare quick
+  # tunnel with a public HTTPS URL (printed in `docker compose logs tunnel`).
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    depends_on:
+      - ui
+    command: tunnel --no-autoupdate --url http://ui:80
