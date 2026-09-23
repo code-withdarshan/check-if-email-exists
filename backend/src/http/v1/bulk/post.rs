@@ -97,6 +97,7 @@ async fn http_handler(
 				input,
 				job_id: CheckEmailJobId::Bulk(rec.id),
 				webhook: webhook.clone(),
+				task_id: Some(uuid::Uuid::new_v4()),
 			};
 
 			publish_task(

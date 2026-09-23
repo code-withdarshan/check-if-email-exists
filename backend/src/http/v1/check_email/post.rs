@@ -62,6 +62,7 @@ async fn handle_without_worker(
 				input: body.to_check_email_input(Arc::clone(&config)),
 				job_id: CheckEmailJobId::SingleShot,
 				webhook: None,
+				task_id: None,
 			},
 			&result_ok,
 			storage.get_extra(),
@@ -118,6 +119,7 @@ async fn handle_with_worker(
 			input: body.to_check_email_input(config.clone()),
 			job_id: CheckEmailJobId::SingleShot,
 			webhook: None,
+			task_id: Some(correlation_id),
 		},
 		properties,
 	)
@@ -198,9 +200,15 @@ async fn http_handler(
 		.into());
 	}
 
-	// Reserve throttle capacity atomically, regardless of worker mode, so
-	// concurrent requests cannot all pass the same limit check.
-	if let Err(throttle_result) = config.get_throttle_manager().try_acquire().await {
+	// In direct mode this process sends the SMTP traffic, so reserve throttle
+	// capacity here, atomically. In worker mode the consumer reserves it at
+	// execution time; reserving here too would count each request twice.
+	let reservation = if config.worker.enable {
+		Ok(())
+	} else {
+		config.get_throttle_manager().try_acquire().await
+	};
+	if let Err(throttle_result) = reservation {
 		return Err(ReacherResponseError::new(
 			http::StatusCode::TOO_MANY_REQUESTS,
 			format!(

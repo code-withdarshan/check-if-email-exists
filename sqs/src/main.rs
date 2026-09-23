@@ -60,6 +60,7 @@ impl CheckEmailPartialTask {
 			input: self.input.to_check_email_input(backend_config),
 			job_id: self.job_id,
 			webhook: self.webhook,
+			task_id: None,
 		}
 	}
 }

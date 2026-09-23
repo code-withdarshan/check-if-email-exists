@@ -38,6 +38,10 @@ pub struct CheckEmailTask {
 	pub input: CheckEmailInput,
 	pub job_id: CheckEmailJobId,
 	pub webhook: Option<TaskWebhook>,
+	/// Stable identity of a queued task, so a redelivered message cannot store
+	/// a second result. Absent on messages published before it existed.
+	#[serde(default)]
+	pub task_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -144,20 +148,38 @@ pub(crate) async fn do_check_email_work(
 			info!(target: LOG_TARGET, email=?&task.input.to_email, err=?e, "Requeued message");
 		}
 		_ => {
-			// This is the happy path. We acknowledge the message and:
-			// - If it's a single-shot email verification, we send a reply to the client.
-			// - In any case, we store the result.
+			// This is the happy path. We store the result *before*
+			// acknowledging, so a storage failure leaves the task recoverable
+			// instead of silently losing it.
+			let storage = config.get_storage_adapter();
+			if let Err(e) = storage
+				.store(task, &worker_output, storage.get_extra())
+				.await
+			{
+				match task.job_id {
+					CheckEmailJobId::SingleShot => {
+						// The caller is waiting on this answer: reply anyway
+						// and drop the message.
+						delivery
+							.reject(BasicRejectOptions { requeue: false })
+							.await?;
+						send_single_shot_reply(channel, &delivery, &worker_output).await?;
+					}
+					CheckEmailJobId::Bulk(_) => {
+						delivery
+							.reject(BasicRejectOptions { requeue: true })
+							.await?;
+						info!(target: LOG_TARGET, email=?&task.input.to_email, "Requeued message after storage failure");
+					}
+				}
+				return Err(e.into());
+			}
+
 			delivery.ack(BasicAckOptions::default()).await?;
 
 			if let CheckEmailJobId::SingleShot = task.job_id {
 				send_single_shot_reply(channel, &delivery, &worker_output).await?;
 			}
-
-			// Store the result.
-			let storage = config.get_storage_adapter();
-			storage
-				.store(task, &worker_output, storage.get_extra())
-				.await?;
 
 			// If we're in the Commercial License Trial, we also store the
 			// result by sending it to back to Reacher.
@@ -206,4 +228,24 @@ pub async fn check_email_and_send_result(
 	}
 
 	Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn decodes_messages_published_without_task_id() {
+		let task = CheckEmailTask {
+			input: CheckEmailInput::default(),
+			job_id: CheckEmailJobId::Bulk(1),
+			webhook: None,
+			task_id: Some(uuid::Uuid::new_v4()),
+		};
+		let mut json = serde_json::to_value(&task).unwrap();
+		json.as_object_mut().unwrap().remove("task_id");
+
+		let decoded: CheckEmailTask = serde_json::from_value(json).unwrap();
+		assert_eq!(decoded.task_id, None);
+	}
 }

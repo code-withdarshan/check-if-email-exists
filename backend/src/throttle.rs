@@ -202,16 +202,6 @@ impl ThrottleManager {
 			config,
 		}
 	}
-
-	pub async fn check_throttle(&self) -> Option<ThrottleResult> {
-		let mut throttle = self.inner.lock().await;
-		throttle.reset_if_needed();
-		throttle.should_throttle(&self.config)
-	}
-
-	pub async fn increment_counters(&self) {
-		self.inner.lock().await.increment_counters();
-	}
 }
 
 #[cfg(test)]
@@ -232,16 +222,13 @@ mod tests {
 		let manager = ThrottleManager::new(config);
 
 		// Should allow initial requests
-		assert_eq!(manager.check_throttle().await, None);
-		manager.increment_counters().await;
-		assert_eq!(manager.check_throttle().await, None);
-		manager.increment_counters().await;
+		assert_eq!(manager.try_acquire().await, Ok(()));
+		assert_eq!(manager.try_acquire().await, Ok(()));
 
 		// Should throttle after hitting per-second limit
-		let throttle_result = manager.check_throttle().await;
-		assert!(throttle_result.is_some());
+		let throttle_result = manager.try_acquire().await;
 		assert_eq!(
-			throttle_result.unwrap().limit_type,
+			throttle_result.unwrap_err().limit_type,
 			ThrottleLimit::PerSecond
 		);
 
@@ -249,7 +236,7 @@ mod tests {
 		sleep(Duration::from_secs(1)).await;
 
 		// Should allow more requests
-		assert_eq!(manager.check_throttle().await, None);
+		assert_eq!(manager.try_acquire().await, Ok(()));
 	}
 }
 

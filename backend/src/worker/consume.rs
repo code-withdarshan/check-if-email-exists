@@ -41,10 +41,11 @@ pub async fn setup_rabbit_mq(
 	config: &RabbitMQConfig,
 ) -> Result<Channel, anyhow::Error> {
 	let options = ConnectionProperties::default()
-		// Use tokio executor and reactor.
 		.with_executor(tokio_executor_trait::Tokio::current())
-		.with_reactor(tokio_reactor_trait::Tokio)
 		.with_connection_name(backend_name.into());
+	// Tokio's reactor adapter is Unix-only; other platforms use Lapin's default.
+	#[cfg(unix)]
+	let options = options.with_reactor(tokio_reactor_trait::Tokio);
 
 	let conn = Connection::connect(&config.url, options)
 		.await
@@ -112,8 +113,9 @@ async fn consume_check_email(config: Arc<BackendConfig>) -> Result<(), anyhow::E
 			let payload = serde_json::from_slice::<CheckEmailTask>(&delivery.data)?;
 			debug!(target: LOG_TARGET, email=?payload.input.to_email, "Consuming message");
 
-			// Check if we should throttle before fetching the next message
-			if let Some(throttle_result) = throttle.check_throttle().await {
+			// Reserve throttle capacity atomically before starting the task.
+			// This is the only place worker-mode requests are counted.
+			if let Err(throttle_result) = throttle.try_acquire().await {
 				// This line below will log every time the worker fetches from
 				// RabbitMQ. It's noisy
 				trace!(target: LOG_TARGET, wait=?throttle_result.delay, email=?payload.input.to_email, "Too many requests {}, throttling", throttle_result.limit_type);
@@ -168,9 +170,6 @@ async fn consume_check_email(config: Arc<BackendConfig>) -> Result<(), anyhow::E
 					capture_anyhow(&e);
 				}
 			});
-
-			// Increment throttle counters once we spawn the task
-			throttle.increment_counters().await;
 		}
 
 		Ok::<(), anyhow::Error>(())
