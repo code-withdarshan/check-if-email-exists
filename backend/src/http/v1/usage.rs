@@ -14,6 +14,24 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod bulk;
-pub mod check_email;
-pub mod usage;
+//! This file implements the `GET /v1/usage` endpoint, which reports how much
+//! of each throttle window this process has used.
+
+use crate::config::BackendConfig;
+use crate::http::check_header;
+use check_if_email_exists::LOG_TARGET;
+use std::sync::Arc;
+use warp::Filter;
+
+pub fn v1_get_usage(
+	config: Arc<BackendConfig>,
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+	warp::path!("v1" / "usage")
+		.and(warp::get())
+		.and(check_header(Arc::clone(&config)))
+		.and_then(move || {
+			let throttle = config.get_throttle_manager();
+			async move { Ok::<_, warp::Rejection>(warp::reply::json(&throttle.usage().await)) }
+		})
+		.with(warp::log(LOG_TARGET))
+}

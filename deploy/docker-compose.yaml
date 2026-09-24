@@ -1,6 +1,37 @@
-# Single-server deployment: the verification backend plus a login-protected
-# web page. See deploy/README.md for setup.
+# Single-server deployment: the verification backend (with background bulk
+# jobs), its queue and database, and a login-protected web page. See
+# deploy/README.md for setup.
 services:
+  queue:
+    image: rabbitmq:3.13-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: reacher
+      RABBITMQ_DEFAULT_PASS: ${QUEUE_PASSWORD:?Set QUEUE_PASSWORD in deploy/.env}
+    volumes:
+      - queue-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reacher
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in deploy/.env}
+      POSTGRES_DB: reacher
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "reacher"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
     build:
       context: ..
@@ -11,7 +42,17 @@ services:
       RCH__HEADER_SECRET: ${REACHER_SECRET:?Set REACHER_SECRET in deploy/.env}
       RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: ${MAX_PER_MINUTE:-10}
       RCH__THROTTLE__MAX_REQUESTS_PER_DAY: ${MAX_PER_DAY:-300}
+      # Background mode: bulk jobs are queued and keep running without the
+      # page open; jobs over the daily limit wait and resume by themselves.
+      RCH__WORKER__ENABLE: "true"
+      RCH__WORKER__RABBITMQ__URL: amqp://reacher:${QUEUE_PASSWORD}@queue:5672
+      RCH__STORAGE__POSTGRES__DB_URL: postgres://reacher:${DB_PASSWORD}@db:5432/reacher
       RUST_LOG: reacher=info
+    depends_on:
+      queue:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
       interval: 15s
@@ -46,3 +87,7 @@ services:
     depends_on:
       - ui
     command: tunnel --no-autoupdate --url http://ui:80
+
+volumes:
+  queue-data:
+  db-data:

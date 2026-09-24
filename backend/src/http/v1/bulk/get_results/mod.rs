@@ -47,6 +47,9 @@ struct Request {
 	format: Option<ResponseFormat>,
 	limit: Option<u64>,
 	offset: Option<u64>,
+	/// Return the results stored so far instead of refusing while the job
+	/// is still running.
+	partial: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,7 +92,7 @@ async fn http_handler(
 	.count
 	.unwrap_or(0);
 
-	if total_processed < total_records as i64 {
+	if total_processed < total_records as i64 && !req.partial.unwrap_or(false) {
 		return Err(ReacherResponseError::new(
 			StatusCode::BAD_REQUEST,
 			format!("Job {} is still running, please try again later", job_id),

@@ -3,18 +3,44 @@
 server {
     listen 80;
     root /usr/share/nginx/html;
+    client_max_body_size 10m;
 
     # Everything, page and API, requires a login (see deploy/README.md).
     auth_basic "Email Checker";
     auth_basic_user_file /etc/nginx/htpasswd;
 
-    # The page posts here. The shared secret is added server-side and is
-    # never sent to the browser.
+    # Re-resolve the backend so a recreated container is picked up.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $reacher_upstream http://backend:8080;
+
+    # The shared secret is added server-side and never sent to the browser.
+    proxy_set_header x-reacher-secret "${REACHER_SECRET}";
+    proxy_read_timeout 150s;
+
     location = /api/check {
         limit_except POST { deny all; }
-        proxy_pass http://backend:8080/v1/check_email;
-        proxy_set_header x-reacher-secret "${REACHER_SECRET}";
+        rewrite ^ /v1/check_email break;
         proxy_set_header Content-Type application/json;
-        proxy_read_timeout 150s;
+        # Setting any header here drops the server-level ones, so repeat it.
+        proxy_set_header x-reacher-secret "${REACHER_SECRET}";
+        proxy_pass $reacher_upstream;
+    }
+    location = /api/bulk {
+        limit_except POST { deny all; }
+        rewrite ^ /v1/bulk break;
+        proxy_set_header Content-Type application/json;
+        # Setting any header here drops the server-level ones, so repeat it.
+        proxy_set_header x-reacher-secret "${REACHER_SECRET}";
+        proxy_pass $reacher_upstream;
+    }
+    location ~ ^/api/bulk/[0-9]+(/results)?$ {
+        limit_except GET { deny all; }
+        rewrite ^/api/(.*)$ /v1/$1 break;
+        proxy_pass $reacher_upstream;
+    }
+    location = /api/usage {
+        limit_except GET { deny all; }
+        rewrite ^ /v1/usage break;
+        proxy_pass $reacher_upstream;
     }
 }

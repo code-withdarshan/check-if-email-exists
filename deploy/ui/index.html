@@ -7,17 +7,20 @@
 <style>
 	:root {
 		--bg: #f6f7f9; --card: #ffffff; --text: #1a1d23; --muted: #626b78; --border: #dde1e7;
-		--accent: #2f6fe4; --accent-text: #ffffff;
+		--accent: #2f6fe4; --accent-text: #ffffff; --hover: #f0f3f8;
 		--safe: #1f8a4c; --safe-bg: #e6f4ec; --risky: #a86200; --risky-bg: #fdf1dd;
 		--invalid: #c4352b; --invalid-bg: #fbe7e5; --unknown: #5b6472; --unknown-bg: #eceef1;
+		/* Chart fills: validated so neighbours in the bar stay apart for colour-blind readers. */
+		--c-safe: #1f8a4c; --c-risky: #c98f00; --c-unknown: #7d8694; --c-invalid: #b83227;
 		color-scheme: light;
 	}
 	@media (prefers-color-scheme: dark) {
 		:root {
 			--bg: #14161a; --card: #1d2026; --text: #e8eaee; --muted: #9aa3b0; --border: #2e333b;
-			--accent: #5b8ff0;
+			--accent: #5b8ff0; --hover: #242830;
 			--safe: #5cc98a; --safe-bg: #17301f; --risky: #f0b04a; --risky-bg: #33280f;
 			--invalid: #f07a70; --invalid-bg: #3a1c1a; --unknown: #aab2be; --unknown-bg: #2a2e35;
+			--c-safe: #5cc98a; --c-risky: #e6b43c; --c-unknown: #7f8894; --c-invalid: #e05a4f;
 			color-scheme: dark;
 		}
 	}
@@ -25,34 +28,53 @@
 	body {
 		margin: 0; background: var(--bg); color: var(--text);
 		font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-		padding: 48px 16px;
+		padding: 40px 16px 64px;
 	}
-	main { max-width: 560px; margin: 0 auto; }
+	main { max-width: 1200px; margin: 0 auto; }
+	.narrow { max-width: 680px; }
+	header.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 	h1 { font-size: 24px; margin: 0 0 4px; }
-	.sub { color: var(--muted); margin: 0 0 24px; }
+	h2 { font-size: 19px; margin: 44px 0 4px; padding-top: 28px; border-top: 1px solid var(--border); }
+	h3 { font-size: 15px; margin: 20px 0 8px; }
+	.sub { color: var(--muted); margin: 0 0 20px; }
+	.usage {
+		background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+		padding: 8px 14px; font-size: 13px; color: var(--muted); min-width: 220px;
+	}
+	.usage b { color: var(--text); font-size: 15px; }
+	.usage .meter { height: 6px; background: var(--border); border-radius: 999px; overflow: hidden; margin: 6px 0 2px; }
+	.usage .meter > div { height: 100%; background: var(--accent); width: 0; }
+	.usage.full .meter > div { background: var(--c-invalid); }
 	form { display: flex; gap: 8px; flex-wrap: wrap; }
-	input {
+	input[type=email], input[type=search] {
 		flex: 1 1 260px; min-width: 0; padding: 12px 14px; font-size: 16px;
 		border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text);
 	}
-	input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+	input:focus, textarea:focus, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+	input:focus, textarea:focus { border-color: transparent; }
 	button {
 		padding: 12px 22px; font-size: 16px; font-weight: 600; border: 0; border-radius: 8px;
 		background: var(--accent); color: var(--accent-text); cursor: pointer;
 	}
 	button:disabled { opacity: .6; cursor: wait; }
+	.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+	.small { padding: 7px 14px; font-size: 14px; }
+	.linkbtn { background: none; border: 0; padding: 0; color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer; }
+	.linkbtn.danger { color: var(--invalid); }
 	.card {
-		margin-top: 24px; background: var(--card); border: 1px solid var(--border);
+		margin-top: 20px; background: var(--card); border: 1px solid var(--border);
 		border-radius: 12px; padding: 20px;
 	}
 	.badge {
 		display: inline-block; padding: 4px 12px; border-radius: 999px;
-		font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: .04em;
+		font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
 	}
 	.safe { color: var(--safe); background: var(--safe-bg); }
 	.risky { color: var(--risky); background: var(--risky-bg); }
 	.invalid { color: var(--invalid); background: var(--invalid-bg); }
 	.unknown { color: var(--unknown); background: var(--unknown-bg); }
+	.badge.skipped, .badge.queued { color: var(--muted); background: transparent; border: 1px solid var(--border); }
+	.badge.skipped { border-style: dashed; }
 	.email { font-weight: 600; margin: 12px 0 2px; word-break: break-all; }
 	.explain { color: var(--muted); margin: 0 0 16px; }
 	dl { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; margin: 0; }
@@ -63,38 +85,240 @@
 	summary { cursor: pointer; color: var(--muted); }
 	pre {
 		overflow-x: auto; background: var(--bg); border: 1px solid var(--border);
-		border-radius: 8px; padding: 12px; font-size: 12px;
+		border-radius: 8px; padding: 12px; font-size: 12px; margin: 0;
 	}
 	.error { color: var(--invalid); }
-	.note { color: var(--muted); font-size: 13px; margin-top: 24px; }
+	.note { color: var(--muted); font-size: 13px; margin-top: 20px; }
+	.hint { color: var(--muted); font-size: 13px; }
+
+	/* Single-check history */
+	.history { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+	.history li { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
+	.history li:last-child { border-bottom: 0; }
+	.history .badge { font-size: 11px; padding: 2px 9px; }
+	.history .who { font-weight: 600; overflow-wrap: anywhere; }
+	.history .why { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.history time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+	/* Bulk input */
+	.drop { border: 2px dashed transparent; border-radius: 12px; margin: -10px; padding: 10px; transition: border-color .15s, background .15s; }
+	.drop.over { border-color: var(--accent); background: var(--hover); }
+	textarea {
+		width: 100%; min-height: 130px; padding: 12px 14px; font: 14px/1.5 ui-monospace, Consolas, monospace;
+		border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); resize: vertical;
+	}
+	textarea:disabled { opacity: .55; }
+	.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+	.filelabel {
+		display: inline-block; padding: 11px 18px; font-size: 15px; font-weight: 600;
+		border: 1px dashed var(--border); border-radius: 8px; color: var(--accent); cursor: pointer;
+	}
+	.filelabel input { display: none; }
+	.precheck { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+	.precheck h3 { margin: 0 0 4px; }
+	.precheck label { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; font-size: 14px; cursor: pointer; }
+	.precheck label .n { font-weight: 700; }
+	.precheck .ex { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+	.precheck .total { margin-top: 8px; font-weight: 600; }
+
+	/* Past runs */
+	.runs { width: 100%; border-collapse: collapse; font-size: 14px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+	.runs td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+	.runs tr:last-child td { border-bottom: 0; }
+	.runs tr.current td { background: var(--hover); }
+	.runs .name { font-weight: 600; overflow-wrap: anywhere; }
+	.runs .mini { display: flex; gap: 4px; flex-wrap: wrap; }
+	.runs .mini .badge { font-size: 10px; padding: 1px 7px; }
+	.runs .acts { text-align: right; white-space: nowrap; }
+	.runs .acts .linkbtn { margin-left: 12px; }
+
+	/* Run summary chart */
+	.runhead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+	.runhead h3 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+	.status-line { margin: 6px 0 0; }
+	.chart { margin-top: 16px; }
+	.bar { display: flex; gap: 2px; height: 16px; position: relative; }
+	.bar .seg { height: 100%; min-width: 3px; cursor: default; }
+	.bar .seg:first-child { border-radius: 4px 0 0 4px; }
+	.bar .seg:last-child { border-radius: 0 4px 4px 0; }
+	.bar .seg:only-child { border-radius: 4px; }
+	.bar .seg.queued { background: repeating-linear-gradient(45deg, var(--border) 0 4px, transparent 4px 8px); border: 1px solid var(--border); }
+	.bar .seg.skipped { background: repeating-linear-gradient(135deg, var(--border) 0 2px, transparent 2px 6px); border: 1px dashed var(--border); }
+	.legend { display: flex; gap: 6px 18px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; color: var(--muted); }
+	.legend span { display: inline-flex; align-items: center; gap: 6px; }
+	.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+	.legend b { color: var(--text); }
+	.tip {
+		position: fixed; z-index: 50; pointer-events: none; background: var(--text); color: var(--bg);
+		font-size: 13px; padding: 6px 10px; border-radius: 6px; white-space: nowrap; display: none;
+	}
+
+	/* Results toolbar */
+	.toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; margin-top: 18px; }
+	.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+	.chip {
+		padding: 6px 12px; font-size: 13px; font-weight: 600; border-radius: 999px; cursor: pointer;
+		border: 1px solid var(--border); background: var(--card); color: var(--text);
+	}
+	.chip .n { color: var(--muted); font-weight: 500; margin-left: 4px; }
+	.chip[aria-pressed=true] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+	.chip.safe, .chip.risky, .chip.invalid, .chip.unknown { border-color: transparent; }
+	.chip.safe[aria-pressed=true], .chip.risky[aria-pressed=true], .chip.invalid[aria-pressed=true],
+	.chip.unknown[aria-pressed=true] { border-color: currentColor; box-shadow: inset 0 0 0 1px currentColor; }
+	.tools { display: flex; flex: 1 1 auto; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+	.tools input[type=search] { flex: 0 1 240px; padding: 8px 12px; font-size: 14px; }
+	.menu { position: relative; margin: 0; }
+	.menu summary {
+		list-style: none; padding: 7px 14px; font-size: 14px; font-weight: 600; color: var(--accent);
+		border: 1px solid var(--border); border-radius: 8px; background: transparent;
+	}
+	.menu summary::-webkit-details-marker { display: none; }
+	.menu[open] summary { background: var(--hover); }
+	.menu .items {
+		position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 250px;
+		background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 6px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+	}
+	.menu .items button {
+		display: flex; justify-content: space-between; gap: 12px; width: 100%; text-align: left;
+		background: none; color: var(--text); font-size: 14px; font-weight: 500; padding: 8px 10px; border-radius: 6px;
+	}
+	.menu .items button:hover { background: var(--hover); }
+	.menu .items button .n { color: var(--muted); }
+
+	/* Results table */
+	.tablewrap {
+		margin-top: 12px; border: 1px solid var(--border); border-radius: 10px;
+		overflow: auto; max-height: 640px; background: var(--card);
+	}
+	table.data { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 14px; }
+	.data th, .data td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; vertical-align: top; }
+	.data th {
+		position: sticky; top: 0; z-index: 2; background: var(--card); color: var(--muted);
+		font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+		cursor: pointer; user-select: none;
+	}
+	.data th .arrow { opacity: 0; margin-left: 4px; }
+	.data th:hover .arrow { opacity: .4; }
+	.data th.sorted .arrow { opacity: 1; color: var(--accent); }
+	.data th.sticky, .data td.sticky { position: sticky; left: 0; background: var(--card); z-index: 1; }
+	.data th.sticky { z-index: 3; }
+	.data tbody tr.main { cursor: pointer; }
+	.data tbody tr.main:hover td { background: var(--hover); }
+	.data tbody tr.open td { background: var(--hover); border-bottom-color: transparent; }
+	.data td.num { color: var(--muted); }
+	.data td.addr { font-weight: 600; min-width: 240px; max-width: 340px; white-space: normal; overflow-wrap: anywhere; }
+	.data td.reason { min-width: 240px; max-width: 380px; white-space: normal; color: var(--muted); }
+	.data td.contact { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+	.data td .badge { font-size: 11px; padding: 2px 9px; }
+	.fix { display: block; font-weight: 400; font-size: 12px; color: var(--risky); }
+	.caret { display: inline-block; width: 12px; color: var(--muted); transition: transform .15s; }
+	tr.open .caret { transform: rotate(90deg); }
+	tr.detail td { background: var(--hover); white-space: normal; padding: 4px 0 18px; }
+	.detailbox { position: sticky; left: 0; max-width: var(--vw, 900px); padding: 0 16px 0 40px; }
+	.detailgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px 28px; }
+	.detailgrid h4 { margin: 10px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+	.detailgrid dl { grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; }
+	.detailgrid dd { text-align: left; font-weight: 500; word-break: break-word; }
+	.empty { padding: 28px; text-align: center; color: var(--muted); }
+	.more { text-align: center; margin-top: 10px; }
 </style>
 </head>
 <body>
 <main>
-	<h1>Email Checker</h1>
-	<p class="sub">Checks whether an email address exists, without sending any email.</p>
+	<header class="top">
+		<div class="narrow">
+			<h1>Email Checker</h1>
+			<p class="sub">Checks whether an email address exists, without sending any email.</p>
+		</div>
+		<div id="usage" class="usage" hidden aria-live="polite"></div>
+	</header>
 
-	<form id="form">
-		<input id="email" type="email" placeholder="name@example.com" required autocomplete="off" autofocus>
-		<button id="btn" type="submit">Check</button>
-	</form>
+	<section class="narrow">
+		<form id="form">
+			<input id="email" type="email" placeholder="name@example.com" required autocomplete="off" autofocus>
+			<button id="btn" type="submit">Check</button>
+		</form>
 
-	<div id="out"></div>
+		<div id="out"></div>
 
-	<p class="note">Most checks take 2–10 seconds. Outlook, Hotmail and Yahoo addresses usually come back "unknown" from home internet connections, because those providers block home IP addresses. Limit: 10 checks per minute, 300 per day.</p>
+		<p class="note">Most checks take 2–10 seconds. Outlook, Hotmail and Yahoo addresses usually come back "unknown" from home internet connections, because those providers block home IP addresses. While a bulk run is going, single checks may ask you to wait a minute.</p>
+
+		<div id="historyBox" hidden>
+			<div class="runhead"><h3>Recent checks</h3><button id="historyClear" type="button" class="linkbtn">Clear</button></div>
+			<ul id="history" class="history"></ul>
+		</div>
+	</section>
+
+	<h2>Check many addresses</h2>
+	<section class="narrow">
+		<p class="sub">Paste addresses, or upload or drop a CSV file. From a CSV, the email column is found automatically and the other columns (name, company…) stay with each contact. Runs happen on the server: you can close this page and come back later.</p>
+
+		<div id="drop" class="drop">
+			<textarea id="bulkText" placeholder="first@example.com&#10;second@example.com&#10;&#10;…or drop a CSV file here"></textarea>
+			<div class="row">
+				<label class="filelabel">Upload CSV<input id="bulkFile" type="file" accept=".csv,.txt,text/csv,text/plain"></label>
+				<span id="bulkFound" class="hint"></span>
+				<button id="bulkClearFile" type="button" class="linkbtn" hidden>Remove file</button>
+			</div>
+		</div>
+
+		<div id="precheck" class="precheck" hidden></div>
+
+		<div class="row">
+			<button id="bulkStart" type="button">Start bulk check</button>
+			<span id="startMsg" class="hint"></span>
+		</div>
+	</section>
+
+	<div id="runsBox" hidden>
+		<h2>Runs</h2>
+		<table class="runs"><tbody id="runs"></tbody></table>
+	</div>
+
+	<div id="bulkOut" hidden>
+		<div class="runhead">
+			<h3 id="runTitle"></h3>
+			<button id="recheck" type="button" class="secondary small" hidden></button>
+		</div>
+		<p id="bulkStatus" class="hint status-line" aria-live="polite"></p>
+
+		<div class="chart">
+			<div id="bar" class="bar" role="img"></div>
+			<div id="legend" class="legend"></div>
+		</div>
+
+		<div class="toolbar">
+			<div id="chips" class="chips" role="group" aria-label="Filter by result"></div>
+			<div class="tools">
+				<input id="search" type="search" placeholder="Search email, name, reason…" aria-label="Search results">
+				<details id="dlMenu" class="menu">
+					<summary>Download ▾</summary>
+					<div id="dlItems" class="items"></div>
+				</details>
+			</div>
+		</div>
+
+		<div class="tablewrap">
+			<table class="data">
+				<thead><tr id="thead"></tr></thead>
+				<tbody id="tbody"></tbody>
+			</table>
+		</div>
+		<div class="more"><button id="showMore" type="button" class="secondary small" hidden></button></div>
+		<p class="hint">Click a row to see every detail for that contact. Click a column heading to sort.</p>
+	</div>
 </main>
+<div id="tip" class="tip" role="tooltip"></div>
 
 <script>
+	const $ = id => document.getElementById(id);
 	const EXPLAIN = {
 		safe: "The mailbox exists and accepts email.",
 		risky: "The address may work, but it is risky: a catch-all domain, disposable, shared (role) address, or full inbox.",
 		invalid: "The address does not exist or cannot receive email.",
 		unknown: "Could not tell. The mail server did not give a clear answer."
 	};
-	const form = document.getElementById("form");
-	const input = document.getElementById("email");
-	const btn = document.getElementById("btn");
-	const out = document.getElementById("out");
 
 	function esc(s) {
 		return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -104,6 +328,101 @@
 		const ok = good ? v : !v;
 		return `<span class="${ok ? "yes" : "no"}">${v ? "Yes" : "No"}</span>`;
 	}
+	function store(key, value) {
+		try {
+			if (value === undefined) return JSON.parse(localStorage.getItem(key) || "null");
+			localStorage.setItem(key, JSON.stringify(value));
+			return true;
+		} catch (_) { return value === undefined ? null : false; }
+	}
+	function ago(t) {
+		const s = Math.round((Date.now() - t) / 1000);
+		if (s < 60) return "just now";
+		if (s < 3600) return `${Math.round(s / 60)} min ago`;
+		if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+		return new Date(t).toLocaleDateString();
+	}
+	function duration(secs) {
+		if (secs < 90) return `${Math.max(1, Math.round(secs))} s`;
+		if (secs < 5400) return `${Math.round(secs / 60)} min`;
+		const h = Math.floor(secs / 3600), m = Math.round((secs % 3600) / 60);
+		return m ? `${h} h ${m} min` : `${h} h`;
+	}
+	async function api(path, options) {
+		const res = await fetch(path, options);
+		const text = await res.text();
+		let body = null;
+		try { body = JSON.parse(text); } catch (_) {}
+		if (!res.ok) {
+			const err = new Error((body && body.error) || text || `Error ${res.status}`);
+			err.status = res.status;
+			throw err;
+		}
+		return body;
+	}
+
+	// ---- What a result means, in plain words ----
+	function reasonFor(r) {
+		if (r.status === "skipped") return r.flag.reason;
+		if (r.status === "queued") return "Waiting in the server's queue.";
+		const x = r.result || {};
+		if (typeof x.error === "string") return "The check could not finish: " + x.error;
+		if (x.syntax && x.syntax.is_valid_syntax === false) return "Not a valid email address format.";
+		if (x.mx?.error || x.mx?.accepts_mail === false) return "The domain has no mail server, so it cannot receive email.";
+		const s = x.smtp || {};
+		if (s.error) {
+			const m = String(s.error.message || "");
+			if (s.description === "IpBlacklisted") return "The mail server blocked this checker's internet address (common for Outlook and Yahoo on home connections).";
+			if (s.description === "NeedsRDNS") return "The mail server requires reverse DNS for this checker's internet address.";
+			if (/HELO|EHLO/i.test(m)) return "The mail server rejected the checker's server name.";
+			if (/sender verify|sender address/i.test(m)) return "The mail server could not verify the checker's sender address.";
+			if (/time(d)? ?out/i.test(m)) return "The mail server did not answer in time.";
+			if (/connect|refused|unreachable/i.test(m)) return "Could not connect to the mail server.";
+			return "The mail server gave no clear answer: " + m.slice(0, 160);
+		}
+		if (s.is_disabled) return "The mailbox exists but is disabled.";
+		if (s.has_full_inbox) return "The mailbox exists but its inbox is full.";
+		if (s.is_deliverable === false) return "This mailbox does not exist on the mail server.";
+		if (s.is_catch_all) return "The domain accepts every address, so this mailbox can't be confirmed.";
+		if (x.misc?.is_disposable) return "Temporary (disposable) address.";
+		if (x.misc?.is_role_account) return s.is_deliverable
+			? "The mailbox exists, but it is a shared role address (info@, support@…), usually read by a team."
+			: "Shared role address (info@, support@…), usually read by a team.";
+		if (s.is_deliverable) return "The mailbox exists and accepts email.";
+		return EXPLAIN[r.status] || "";
+	}
+
+	// ---- Usage counter ----
+	const usageBox = $("usage");
+	let usage = null;
+	async function refreshUsage() {
+		try { usage = await api("/api/usage"); } catch (_) { return; }
+		const d = usage.per_day;
+		if (!d) { usageBox.hidden = true; return; }
+		const full = d.used >= d.limit;
+		usageBox.hidden = false;
+		usageBox.classList.toggle("full", full);
+		usageBox.innerHTML = `<b>${d.used}</b> of ${d.limit} checks used
+			<div class="meter"><div style="width:${Math.min(100, 100 * d.used / d.limit)}%"></div></div>
+			${full ? "Limit reached. " : ""}Resets in ${duration(d.resets_in_secs)}`;
+	}
+	refreshUsage();
+	setInterval(refreshUsage, 30000);
+
+	// ---- Single check ----
+	const form = $("form"), input = $("email"), btn = $("btn"), out = $("out");
+	let singles = store("ec.singles") || [];
+
+	function renderHistory() {
+		$("historyBox").hidden = !singles.length;
+		$("history").innerHTML = singles.slice(0, 10).map(h => `<li>
+			<span class="badge ${esc(h.status)}">${esc(h.status)}</span>
+			<span class="who">${esc(h.email)}</span>
+			<span class="why" title="${esc(h.reason)}">${esc(h.reason)}</span>
+			<time>${esc(ago(h.at))}</time></li>`).join("");
+	}
+	$("historyClear").addEventListener("click", () => { singles = []; store("ec.singles", singles); renderHistory(); });
+	renderHistory();
 
 	form.addEventListener("submit", async (e) => {
 		e.preventDefault();
@@ -121,7 +440,7 @@
 			const text = await res.text();
 			if (!res.ok) {
 				let msg = text;
-				if (res.status === 429) msg = "Too many checks. Wait a minute and try again.";
+				if (res.status === 429) msg = /per day/i.test(text) ? "Today's limit of checks is used up." : "Too many checks right now. Wait a minute and try again.";
 				else if (res.status === 504) msg = "The check took too long and was stopped. Try again in a moment.";
 				else { try { msg = JSON.parse(text).error || text; } catch (_) {} }
 				out.innerHTML = `<div class="card error">Error ${res.status}: ${esc(msg)}</div>`;
@@ -129,11 +448,12 @@
 			}
 			const r = JSON.parse(text);
 			const status = r.is_reachable || "unknown";
+			const reason = reasonFor({ status, result: r });
 			out.innerHTML = `
 				<div class="card">
 					<span class="badge ${esc(status)}">${esc(status)}</span>
 					<p class="email">${esc(r.input || email)}</p>
-					<p class="explain">${esc(EXPLAIN[status] || "")}</p>
+					<p class="explain">${esc(reason)}</p>
 					<dl>
 						<dt>Valid format</dt><dd>${flag(r.syntax?.is_valid_syntax, true)}</dd>
 						<dt>Domain has a mail server</dt><dd>${flag(r.mx?.accepts_mail, true)}</dd>
@@ -145,13 +465,626 @@
 					</dl>
 					<details><summary>Full details</summary><pre>${esc(JSON.stringify(r, null, 2))}</pre></details>
 				</div>`;
+			singles = [{ email: r.input || email, status, reason, at: Date.now() }, ...singles.filter(h => h.email.toLowerCase() !== email.toLowerCase())].slice(0, 50);
+			store("ec.singles", singles);
+			renderHistory();
 		} catch (err) {
 			out.innerHTML = `<div class="card error">Could not reach the checker. Is the reacher-public container running? (${esc(err.message)})</div>`;
 		} finally {
 			btn.disabled = false;
 			btn.textContent = "Check";
+			refreshUsage();
 		}
 	});
+
+	// ---- Reading addresses ----
+	const EMAIL_RE = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+	const EMAIL_ONE = /^[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+	function cleanEmail(s) { return String(s).trim().replace(/^mailto:/i, "").replace(/^[<"'.-]+|[>"'.-]+$/g, ""); }
+	function extractEmails(text) {
+		const seen = new Set(), list = [];
+		for (const m of text.match(EMAIL_RE) || []) {
+			const e = cleanEmail(m), k = e.toLowerCase();
+			if (e.includes("@") && !seen.has(k)) { seen.add(k); list.push(e); }
+		}
+		return list;
+	}
+
+	// Minimal RFC 4180 CSV parser; delimiter guessed from the first line.
+	function parseCsv(text) {
+		text = text.replace(/^﻿/, "");
+		const first = text.split(/\r?\n/, 1)[0];
+		const delim = [",", ";", "\t"].map(d => [d, first.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+		const rows = []; let row = [], f = "", q = false;
+		for (let i = 0; i < text.length; i++) {
+			const c = text[i];
+			if (q) {
+				if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; }
+				else f += c;
+			} else if (c === '"') q = true;
+			else if (c === delim) { row.push(f); f = ""; }
+			else if (c === "\n" || c === "\r") {
+				if (c === "\r" && text[i + 1] === "\n") i++;
+				row.push(f); f = "";
+				if (row.some(v => v.trim())) rows.push(row);
+				row = [];
+			} else f += c;
+		}
+		row.push(f);
+		if (row.some(v => v.trim())) rows.push(row);
+		return rows;
+	}
+
+	function contactsFromCsv(text) {
+		const table = parseCsv(text);
+		if (!table.length) return null;
+		const width = Math.max(...table.map(r => r.length));
+		// The email column is the one with the most valid-looking addresses.
+		const hits = Array.from({ length: width }, (_, c) => table.filter(r => EMAIL_ONE.test(cleanEmail(r[c] || ""))).length);
+		const col = hits.indexOf(Math.max(...hits));
+		if (!hits[col]) return null;
+		const hasHeader = !EMAIL_ONE.test(cleanEmail(table[0][col] || ""));
+		const header = hasHeader
+			? table[0].map((h, i) => h.trim() || `Column ${i + 1}`)
+			: Array.from({ length: width }, (_, i) => `Column ${i + 1}`);
+		while (header.length < width) header.push(`Column ${header.length + 1}`);
+		const seen = new Set(), contacts = [];
+		let blank = 0, dupes = 0;
+		for (const r of table.slice(hasHeader ? 1 : 0)) {
+			const email = cleanEmail(r[col] || "");
+			if (!email) { blank++; continue; }
+			const k = email.toLowerCase();
+			if (seen.has(k)) { dupes++; continue; }
+			seen.add(k);
+			const contact = {};
+			header.forEach((h, i) => { if (i !== col) contact[h] = (r[i] || "").trim(); });
+			contacts.push({ email, contact });
+		}
+		const cols = header.filter((_, i) => i !== col).filter(c => contacts.some(x => x.contact[c]));
+		return { cols, contacts, blank, dupes, emailCol: header[col] };
+	}
+
+	// ---- Pre-check: problems we can spot without using a check ----
+	const POPULAR = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "live.com", "msn.com",
+		"yahoo.co.in", "yahoo.co.uk", "hotmail.co.uk", "rediffmail.com", "protonmail.com", "proton.me", "zoho.com", "yandex.com", "gmx.com"];
+	const REAL = new Set([...POPULAR, "mail.com", "ymail.com", "email.com", "me.com", "mac.com", "aim.com", "gmx.net", "gmx.de",
+		"web.de", "live.in", "outlook.in", "mail.ru", "qq.com", "163.com", "126.com", "yahoo.in", "yahoo.fr", "yahoo.de", "hotmail.fr"]);
+	const DISPOSABLE = new Set(("mailinator.com guerrillamail.com guerrillamail.net guerrillamailblock.com sharklasers.com grr.la " +
+		"10minutemail.com 10minutemail.net tempmail.com temp-mail.org temp-mail.io yopmail.com yopmail.fr yopmail.net trashmail.com " +
+		"getnada.com nada.email dispostable.com maildrop.cc throwawaymail.com fakeinbox.com mintemail.com mohmal.com emailondeck.com " +
+		"tempail.com tempr.email discard.email spamgourmet.com mailnesia.com mytemp.email burnermail.io moakt.com tempinbox.com " +
+		"getairmail.com inboxkitten.com mailcatch.com mailpoof.com harakirimail.com spam4.me pokemail.net byom.de trbvm.com " +
+		"emltmp.com 1secmail.com 1secmail.org 1secmail.net tmail.ws tmpmail.org tmpmail.net minuteinbox.com mailto.plus fexpost.com " +
+		"fexbox.org dropmail.me 10mail.org emailfake.com crazymailing.com tempmailo.com tempmail.dev mail.tm mail.gw").split(" "));
+	const ROLES = new Set(("info support admin administrator sales contact hello help office team marketing billing accounts " +
+		"accounting hr jobs careers noreply no-reply donotreply do-not-reply postmaster webmaster hostmaster abuse enquiries enquiry " +
+		"service feedback press media security legal finance orders newsletter mail").split(" "));
+
+	// Optimal string alignment distance (edits and swapped neighbours), capped early.
+	function nearDistance(a, b) {
+		if (Math.abs(a.length - b.length) > 1) return 9;
+		const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+		for (let j = 1; j <= b.length; j++) d[0][j] = j;
+		for (let i = 1; i <= a.length; i++) {
+			for (let j = 1; j <= b.length; j++) {
+				const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+				d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+				if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+			}
+		}
+		return d[a.length][b.length];
+	}
+	function preflag(email) {
+		if (!EMAIL_ONE.test(email)) return { kind: "format", reason: "Skipped: not a valid email address format. No check used." };
+		const [local, domain] = email.toLowerCase().split("@");
+		if (!REAL.has(domain)) {
+			const fix = POPULAR.find(p => nearDistance(domain, p) === 1);
+			if (fix) return { kind: "typo", fix: `${email.split("@")[0]}@${fix}`, reason: `Skipped: the domain looks mistyped (did you mean ${fix}?). No check used.` };
+		}
+		if (DISPOSABLE.has(domain)) return { kind: "disposable", reason: "Skipped: temporary (disposable) email service. No check used." };
+		if (ROLES.has(local.replace(/[._-]?\d+$/, ""))) return { kind: "role", reason: "Skipped: shared role address (info@, support@…). No check used." };
+		return null;
+	}
+	const PRE_KINDS = [
+		["format", "Invalid format", true],
+		["typo", "Likely typos in the domain", true],
+		["disposable", "Temporary (disposable) addresses", true],
+		["role", "Shared role addresses (info@, support@…)", false]
+	];
+	const skipKinds = new Set(PRE_KINDS.filter(k => k[2]).map(k => k[0]));
+
+	// ---- Bulk input ----
+	const bulkText = $("bulkText"), bulkFile = $("bulkFile"), bulkFound = $("bulkFound"), bulkClearFile = $("bulkClearFile");
+	const precheck = $("precheck"), bulkStart = $("bulkStart"), startMsg = $("startMsg");
+	let uploaded = null;   // { name, cols, contacts } while a CSV is loaded
+	let draft = [];        // contacts from the current input, each with its pre-check flag
+
+	function readInput() {
+		const contacts = uploaded ? uploaded.contacts : extractEmails(bulkText.value).map(email => ({ email, contact: {} }));
+		draft = contacts.map(c => ({ ...c, flag: preflag(c.email) }));
+		renderPrecheck();
+	}
+	function renderPrecheck() {
+		if (!uploaded) {
+			const n = draft.length;
+			bulkFound.textContent = n ? `${n} address${n === 1 ? "" : "es"} found` : "";
+		}
+		const groups = {};
+		draft.forEach(c => { if (c.flag) (groups[c.flag.kind] = groups[c.flag.kind] || []).push(c.email); });
+		const kinds = PRE_KINDS.filter(([k]) => groups[k]);
+		if (!draft.length) { precheck.hidden = true; return; }
+		const skipped = draft.filter(c => c.flag && skipKinds.has(c.flag.kind)).length;
+		const toCheck = draft.length - skipped;
+		precheck.hidden = false;
+		precheck.innerHTML = (kinds.length
+			? `<h3>Found before checking</h3><p class="hint" style="margin:0 0 6px">Ticked groups are skipped, so they don't use any of your daily checks.</p>` +
+				kinds.map(([k, label]) => `<label><input type="checkbox" data-kind="${k}" ${skipKinds.has(k) ? "checked" : ""}>
+					<span><span class="n">${groups[k].length}</span> ${esc(label)}
+					<span class="ex">— ${esc(groups[k].slice(0, 3).join(", "))}${groups[k].length > 3 ? ", …" : ""}</span></span></label>`).join("")
+			: `<h3>Nothing suspicious found</h3>`) +
+			`<div class="total">${toCheck} to check${skipped ? `, ${skipped} skipped` : ""}.` +
+			(usage?.per_day ? ` <span class="hint">${Math.max(0, usage.per_day.limit - usage.per_day.used)} checks left today${toCheck > usage.per_day.limit - usage.per_day.used ? "; the rest continue automatically when the limit resets" : ""}.</span>` : "") + `</div>`;
+	}
+	precheck.addEventListener("change", e => {
+		const k = e.target.dataset.kind;
+		if (!k) return;
+		e.target.checked ? skipKinds.add(k) : skipKinds.delete(k);
+		renderPrecheck();
+	});
+
+	let typingTimer = null;
+	bulkText.addEventListener("input", () => { clearTimeout(typingTimer); typingTimer = setTimeout(readInput, 250); });
+
+	async function loadFile(f) {
+		if (!f) return;
+		const text = await f.text();
+		const parsed = contactsFromCsv(text);
+		if (!parsed || !parsed.contacts.length) {
+			const list = extractEmails(text);
+			if (!list.length) { bulkFound.textContent = `No email addresses found in ${f.name}`; return; }
+			uploaded = { name: f.name, cols: [], contacts: list.map(email => ({ email, contact: {} })) };
+			bulkFound.textContent = `${f.name}: ${list.length} addresses`;
+		} else {
+			uploaded = { name: f.name, ...parsed };
+			const extra = [];
+			if (parsed.cols.length) extra.push(`keeping ${parsed.cols.join(", ")}`);
+			if (parsed.dupes) extra.push(`${parsed.dupes} duplicate${parsed.dupes === 1 ? "" : "s"} skipped`);
+			if (parsed.blank) extra.push(`${parsed.blank} row${parsed.blank === 1 ? "" : "s"} without an email skipped`);
+			bulkFound.textContent = `${f.name}: ${parsed.contacts.length} contacts (email column "${parsed.emailCol}")` + (extra.length ? `; ${extra.join("; ")}` : "");
+		}
+		bulkText.value = uploaded.contacts.slice(0, 200).map(c => c.email).join("\n") + (uploaded.contacts.length > 200 ? `\n… and ${uploaded.contacts.length - 200} more` : "");
+		bulkText.disabled = true;
+		bulkClearFile.hidden = false;
+		readInput();
+	}
+	bulkFile.addEventListener("change", () => { const f = bulkFile.files[0]; bulkFile.value = ""; loadFile(f); });
+	bulkClearFile.addEventListener("click", () => {
+		uploaded = null;
+		bulkText.value = "";
+		bulkText.disabled = false;
+		bulkClearFile.hidden = true;
+		bulkFound.textContent = "";
+		readInput();
+	});
+	const drop = $("drop");
+	["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); }));
+	["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); if (t === "drop" || !drop.contains(e.relatedTarget)) drop.classList.remove("over"); }));
+	drop.addEventListener("drop", e => loadFile(e.dataTransfer.files[0]));
+
+	// ---- Runs (kept in this browser; results live on the server) ----
+	// run: { id, name, created, cols, contacts: [{ email, contact, flag, skip }], jobs: [{ id, emails }], summary }
+	let runs = store("ec.runs") || [];
+	function saveRuns() {
+		if (!store("ec.runs", runs)) startMsg.textContent = "This browser's storage is full; delete old runs to keep new ones after a refresh.";
+	}
+
+	let current = null;     // { run, rows, results: Map, progress: {}, fetched: {} }
+	let pollTimer = null;
+
+	async function submitJob(emails) {
+		const body = await api("/api/bulk", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ input: emails })
+		});
+		return { id: body.job_id, emails: emails.map(e => e.toLowerCase()) };
+	}
+
+	bulkStart.addEventListener("click", async () => {
+		if (!draft.length) { startMsg.textContent = "Add at least one email address first."; return; }
+		const contacts = draft.map(c => ({ ...c, skip: !!(c.flag && skipKinds.has(c.flag.kind)) }));
+		const emails = contacts.filter(c => !c.skip).map(c => c.email);
+		bulkStart.disabled = true;
+		startMsg.textContent = emails.length ? "Sending to the server…" : "";
+		try {
+			const jobs = emails.length ? [await submitJob(emails)] : [];
+			const run = {
+				id: Date.now().toString(36), created: Date.now(),
+				name: uploaded ? uploaded.name : `Pasted list (${contacts.length})`,
+				cols: uploaded ? uploaded.cols : [], contacts, jobs, summary: {}
+			};
+			runs.unshift(run);
+			runs = runs.slice(0, 30);
+			saveRuns();
+			startMsg.textContent = "";
+			openRun(run.id, true);
+		} catch (err) {
+			startMsg.textContent = err.status === 503
+				? "Bulk runs are not available: the server's background mode is off."
+				: `Could not start: ${err.message}`;
+		} finally {
+			bulkStart.disabled = false;
+		}
+	});
+
+	function renderRuns() {
+		$("runsBox").hidden = !runs.length;
+		$("runs").innerHTML = runs.map(run => {
+			const s = run.summary || {};
+			const mini = ["safe", "risky", "invalid", "unknown"].filter(k => s[k]).map(k => `<span class="badge ${k}">${k} ${s[k]}</span>`).join("");
+			const waiting = s.queued ? `<span class="badge queued">waiting ${s.queued}</span>` : "";
+			return `<tr class="${current?.run.id === run.id ? "current" : ""}">
+				<td class="name">${esc(run.name)}<div class="hint">${esc(new Date(run.created).toLocaleString())} · ${run.contacts.length} contacts</div></td>
+				<td><div class="mini">${mini}${waiting}</div></td>
+				<td class="acts"><button type="button" class="linkbtn" data-open="${run.id}">${current?.run.id === run.id ? "Showing" : "Open"}</button>
+				<button type="button" class="linkbtn danger" data-del="${run.id}">Delete</button></td></tr>`;
+		}).join("");
+	}
+	$("runs").addEventListener("click", e => {
+		const o = e.target.closest("[data-open]"), d = e.target.closest("[data-del]");
+		if (o) openRun(o.dataset.open, true);
+		if (d && confirm("Remove this run from the list? (Results stay on the server, but this page will no longer show them.)")) {
+			runs = runs.filter(r => r.id !== d.dataset.del);
+			saveRuns();
+			if (current?.run.id === d.dataset.del) { current = null; clearTimeout(pollTimer); $("bulkOut").hidden = true; }
+			renderRuns();
+		}
+	});
+
+	function openRun(id, scroll) {
+		const run = runs.find(r => r.id === id);
+		if (!run) return;
+		clearTimeout(pollTimer);
+		current = {
+			run, results: new Map(), progress: {}, fetched: {},
+			rows: run.contacts.map((c, i) => ({ i, email: c.email, key: c.email.toLowerCase(), contact: c.contact || {}, flag: c.flag, skip: c.skip }))
+		};
+		open.clear();
+		filter = "all"; query = ""; $("search").value = ""; sortKey = "#"; sortDir = 1; shownLimit = PAGE;
+		$("bulkOut").hidden = false;
+		$("runTitle").textContent = run.name;
+		updateStatuses();
+		render();
+		renderRuns();
+		if (scroll) $("bulkOut").scrollIntoView({ behavior: "smooth", block: "start" });
+		poll();
+	}
+
+	async function fetchResults(job) {
+		const all = [];
+		for (let offset = 0; ; offset += 10000) {
+			const page = await api(`/api/bulk/${job.id}/results?partial=true&limit=10000&offset=${offset}`);
+			all.push(...(page.results || []));
+			if (!page.results || page.results.length < 10000) break;
+		}
+		return all;
+	}
+
+	async function poll() {
+		const cur = current;
+		if (!cur) return;
+		let changed = false, pending = false, failed = null;
+		for (const job of cur.run.jobs) {
+			try {
+				const p = await api(`/api/bulk/${job.id}`);
+				cur.progress[job.id] = p;
+				if (p.total_processed !== cur.fetched[job.id]) {
+					cur.results.set(job.id, await fetchResults(job));
+					cur.fetched[job.id] = p.total_processed;
+					changed = true;
+				}
+				if (String(p.job_status).toLowerCase() !== "completed") pending = true;
+			} catch (err) {
+				failed = err;
+				pending = true;
+			}
+		}
+		if (cur !== current) return;
+		if (changed || failed) { updateStatuses(failed); render(); }
+		if (pending) pollTimer = setTimeout(poll, 5000);
+		if (changed) refreshUsage();
+	}
+
+	// Later jobs (re-checks) override earlier answers for the same address.
+	function updateStatuses(failed) {
+		const cur = current;
+		const latest = new Map();
+		for (const job of cur.run.jobs) {
+			for (const res of cur.results.get(job.id) || []) latest.set(String(res.input || "").toLowerCase(), res);
+		}
+		const waitingOn = new Set();
+		for (const job of cur.run.jobs) {
+			if (String(cur.progress[job.id]?.job_status).toLowerCase() === "completed") continue;
+			const done = new Set((cur.results.get(job.id) || []).map(r => String(r.input || "").toLowerCase()));
+			job.emails.forEach(e => { if (!done.has(e)) waitingOn.add(e); });
+		}
+		for (const r of cur.rows) {
+			const res = latest.get(r.key);
+			if (r.skip) { r.status = "skipped"; r.result = null; }
+			else if (waitingOn.has(r.key) && !res) { r.status = "queued"; r.result = null; }
+			else if (waitingOn.has(r.key)) { r.status = "queued"; r.result = res; }
+			else if (res) { r.status = res.is_reachable || "unknown"; r.result = res; }
+			else { r.status = "queued"; r.result = null; }
+		}
+		const count = {};
+		cur.rows.forEach(r => { count[r.status] = (count[r.status] || 0) + 1; });
+		cur.run.summary = count;
+		saveRuns();
+		renderRuns();
+
+		const queued = count.queued || 0, done = cur.rows.length - queued - (count.skipped || 0);
+		let msg;
+		if (failed) msg = `Could not reach the server (${failed.message}). Retrying…`;
+		else if (!queued) msg = `Done. ${done} checked${count.skipped ? `, ${count.skipped} skipped` : ""}.`;
+		else {
+			const d = usage?.per_day;
+			const perMin = usage?.per_minute?.limit || 10;
+			msg = `${done} checked, ${queued} waiting. `;
+			if (d && d.used >= d.limit) msg += `Today's limit is used up; the rest continue automatically in about ${duration(d.resets_in_secs)}. `;
+			else msg += `About ${duration(queued * 60 / perMin)} to go. `;
+			msg += "You can close this page; the server keeps going.";
+		}
+		$("bulkStatus").textContent = msg;
+		const redo = cur.rows.filter(r => r.status === "unknown").length;
+		const recheck = $("recheck");
+		recheck.hidden = !redo || !!queued;
+		recheck.textContent = `Re-check ${redo} unknown`;
+	}
+
+	$("recheck").addEventListener("click", async () => {
+		const cur = current;
+		const emails = cur.rows.filter(r => r.status === "unknown").map(r => r.email);
+		if (!emails.length) return;
+		const b = $("recheck");
+		b.disabled = true;
+		try {
+			cur.run.jobs.push(await submitJob(emails));
+			saveRuns();
+			updateStatuses();
+			render();
+			poll();
+		} catch (err) {
+			$("bulkStatus").textContent = `Could not start the re-check: ${err.message}`;
+		} finally {
+			b.disabled = false;
+		}
+	});
+
+	// ---- Summary chart ----
+	const CHART = [["safe", "Safe", "var(--c-safe)"], ["risky", "Risky", "var(--c-risky)"], ["unknown", "Unknown", "var(--c-unknown)"],
+		["invalid", "Invalid", "var(--c-invalid)"], ["queued", "Waiting", ""], ["skipped", "Skipped", ""]];
+	const tip = $("tip");
+	function renderChart(count, total) {
+		const parts = CHART.filter(([k]) => count[k]);
+		const pct = n => total ? Math.round(100 * n / total) : 0;
+		$("bar").innerHTML = parts.map(([k, label, color]) =>
+			`<div class="seg ${k}" style="flex:${count[k]} 1 0;${color ? `background:${color}` : ""}" data-tip="${esc(`${label}: ${count[k]} (${pct(count[k])}%)`)}"></div>`).join("");
+		$("bar").setAttribute("aria-label", parts.map(([k, label]) => `${label} ${count[k]}`).join(", "));
+		$("legend").innerHTML = parts.map(([k, label, color]) =>
+			`<span><i class="${color ? "" : "badge " + k}" style="${color ? `background:${color}` : "border:1px dashed var(--muted)"}"></i>${label} <b>${count[k]}</b> ${pct(count[k])}%</span>`).join("");
+	}
+	$("bar").addEventListener("mousemove", e => {
+		const seg = e.target.closest(".seg");
+		if (!seg) { tip.style.display = "none"; return; }
+		tip.textContent = seg.dataset.tip;
+		tip.style.display = "block";
+		tip.style.left = Math.min(e.clientX + 12, innerWidth - tip.offsetWidth - 8) + "px";
+		tip.style.top = e.clientY - 36 + "px";
+	});
+	$("bar").addEventListener("mouseleave", () => { tip.style.display = "none"; });
+
+	// ---- Results table ----
+	const STATUS_ORDER = ["safe", "risky", "invalid", "unknown", "queued", "skipped"];
+	const PAGE = 200;
+	const chips = $("chips"), search = $("search"), thead = $("thead"), tbody = $("tbody");
+	let filter = "all", query = "", sortKey = "#", sortDir = 1, shownLimit = PAGE;
+	const open = new Set();
+
+	const yn = v => v === undefined || v === null ? "" : (v ? "Yes" : "No");
+	const mxHost = x => (x.mx?.records || [])[0]?.replace(/\.$/, "") || "";
+	const seconds = x => x.debug?.duration ? (x.debug.duration.secs + x.debug.duration.nanos / 1e9) : null;
+	const suggestion = r => {
+		if (r.flag?.fix) return r.flag.fix;
+		const s = r.result?.syntax?.suggestion;
+		return s && s.toLowerCase() !== r.email.toLowerCase() ? s : "";
+	};
+	const boolCol = (key, label, get, good) => ({ key, label, get: r => get(r.result || {}), html: r => flag(get(r.result || {}), good) });
+	function columns() {
+		return [
+			{ key: "#", label: "#", cls: "num", get: r => r.i, html: r => `<span class="caret">▸</span> ${r.i + 1}` },
+			{ key: "email", label: "Email", cls: "addr sticky", get: r => r.key,
+				html: r => esc(r.email) + (suggestion(r) ? `<span class="fix">Did you mean ${esc(suggestion(r))}?</span>` : "") },
+			{ key: "status", label: "Result", get: r => STATUS_ORDER.indexOf(r.status),
+				html: r => `<span class="badge ${esc(r.status)}">${esc(r.status === "queued" ? "waiting" : r.status)}</span>` },
+			{ key: "reason", label: "Reason", cls: "reason", get: r => reasonFor(r), html: r => esc(reasonFor(r)) },
+			...current.run.cols.map(c => ({ key: "c:" + c, label: c, cls: "contact", get: r => (r.contact[c] || "").toLowerCase(),
+				html: r => `<span title="${esc(r.contact[c] || "")}">${esc(r.contact[c] || "")}</span>` })),
+			boolCol("deliverable", "Mailbox exists", x => x.smtp?.is_deliverable, true),
+			boolCol("catchall", "Catch-all", x => x.smtp?.is_catch_all, false),
+			boolCol("disposable", "Disposable", x => x.misc?.is_disposable, false),
+			boolCol("role", "Role address", x => x.misc?.is_role_account, false),
+			boolCol("disabled", "Disabled", x => x.smtp?.is_disabled, false),
+			boolCol("full", "Inbox full", x => x.smtp?.has_full_inbox, false),
+			{ key: "free", label: "Free provider", get: r => r.result?.misc?.is_b2c ?? null,
+				html: r => { const v = r.result?.misc?.is_b2c; return v == null ? '<span class="na">—</span>' : (v ? "Yes" : "No"); } },
+			{ key: "mx", label: "Mail server", get: r => mxHost(r.result || {}), html: r => esc(mxHost(r.result || {})) || '<span class="na">—</span>' },
+			{ key: "time", label: "Time", get: r => seconds(r.result || {}) ?? -1,
+				html: r => { const s = seconds(r.result || {}); return s == null ? '<span class="na">—</span>' : s.toFixed(1) + " s"; } }
+		];
+	}
+
+	function filteredRows(f = filter) {
+		const q = query.trim().toLowerCase();
+		let list = current.rows.filter(r => f === "all" || r.status === f || (f === "usable" && (r.status === "safe" || r.status === "risky")));
+		if (q) list = list.filter(r => [r.email, r.status, reasonFor(r), mxHost(r.result || {}), ...Object.values(r.contact)]
+			.some(v => String(v).toLowerCase().includes(q)));
+		const col = columns().find(c => c.key === sortKey) || columns()[0];
+		return list.slice().sort((a, b) => {
+			const x = col.get(a), y = col.get(b);
+			if (x === y) return a.i - b.i;
+			if (x === null || x === undefined || x === "") return 1;
+			if (y === null || y === undefined || y === "") return -1;
+			return (x < y ? -1 : 1) * sortDir;
+		});
+	}
+
+	function detailHtml(r) {
+		const x = r.result || {};
+		const dl = pairs => `<dl>${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
+		const txt = v => v === undefined || v === null || v === "" ? '<span class="na">—</span>' : esc(v);
+		const groups = [];
+		if (current.run.cols.length) groups.push(["Contact", dl(current.run.cols.map(c => [c, txt(r.contact[c])]))]);
+		groups.push(["Result", dl([
+			["Result", `<span class="badge ${esc(r.status)}">${esc(r.status === "queued" ? "waiting" : r.status)}</span>`],
+			["Meaning", txt(reasonFor(r))],
+			["Suggested fix", txt(suggestion(r))],
+			["Checked in", seconds(x) == null ? txt("") : seconds(x).toFixed(2) + " s"]
+		])]);
+		groups.push(["Address", dl([
+			["Valid format", flag(x.syntax?.is_valid_syntax, true)],
+			["Username", txt(x.syntax?.username)],
+			["Domain", txt(x.syntax?.domain)],
+			["Normalized", txt(x.syntax?.normalized_email)],
+			["Free provider (Gmail, Yahoo…)", x.misc?.is_b2c == null ? txt("") : (x.misc.is_b2c ? "Yes" : "No")],
+			["Disposable", flag(x.misc?.is_disposable, false)],
+			["Role address", flag(x.misc?.is_role_account, false)]
+		])]);
+		groups.push(["Mail server", dl([
+			["Has a mail server", flag(x.mx?.accepts_mail, true)],
+			["Servers", txt((x.mx?.records || []).map(s => s.replace(/\.$/, "")).join(", "))],
+			["Could connect", flag(x.smtp?.can_connect_smtp, true)],
+			["Mailbox exists", flag(x.smtp?.is_deliverable, true)],
+			["Catch-all", flag(x.smtp?.is_catch_all, false)],
+			["Inbox full", flag(x.smtp?.has_full_inbox, false)],
+			["Disabled", flag(x.smtp?.is_disabled, false)],
+			["Server reply", txt(x.smtp?.error?.message || x.mx?.error?.message || (typeof x.error === "string" ? x.error : ""))]
+		])]);
+		return `<div class="detailbox"><div class="detailgrid">${groups.map(([h, b]) => `<div><h4>${esc(h)}</h4>${b}</div>`).join("")}</div>`
+			+ (r.result ? `<details><summary>Raw data</summary><pre>${esc(JSON.stringify(r.result, null, 2))}</pre></details>` : "") + "</div>";
+	}
+
+	const tablewrap = document.querySelector(".tablewrap");
+	let renderQueued = false;
+	function render() {
+		if (renderQueued) return;
+		renderQueued = true;
+		requestAnimationFrame(() => { renderQueued = false; renderNow(); });
+	}
+	window.addEventListener("resize", render);
+	function renderNow() {
+		if (!current) return;
+		tablewrap.style.setProperty("--vw", tablewrap.clientWidth + "px");
+		const cols = columns(), rows = current.rows;
+		const count = {};
+		rows.forEach(r => { count[r.status] = (count[r.status] || 0) + 1; });
+		renderChart(count, rows.length);
+
+		const chipDefs = [["all", "All", rows.length], ["safe", "Safe"], ["risky", "Risky"], ["invalid", "Invalid"],
+			["unknown", "Unknown"], ["queued", "Waiting"], ["skipped", "Skipped"]];
+		chips.innerHTML = chipDefs
+			.filter(([k]) => k === "all" || count[k] || filter === k)
+			.map(([k, label, n]) => `<button type="button" class="chip ${["safe", "risky", "invalid", "unknown"].includes(k) ? k : ""}" data-f="${k}" aria-pressed="${filter === k}">${label}<span class="n">${n ?? count[k] ?? 0}</span></button>`)
+			.join("");
+
+		const usable = (count.safe || 0) + (count.risky || 0);
+		const shown = filteredRows().length;
+		$("dlItems").innerHTML = [
+			["usable", "Usable (safe + risky)", usable], ["safe", "Safe only", count.safe || 0], ["risky", "Risky only", count.risky || 0],
+			["invalid", "Invalid only", count.invalid || 0], ["unknown", "Unknown only", count.unknown || 0],
+			["shown", "What's shown now", shown], ["all", "Everything", rows.length]
+		].map(([k, label, n]) => `<button type="button" data-dl="${k}" ${n ? "" : "disabled"}>${label}<span class="n">${n}</span></button>`).join("");
+
+		thead.innerHTML = cols.map(c => `<th class="${c.key === sortKey ? "sorted " : ""}${c.cls?.includes("sticky") ? "sticky" : ""}" data-k="${esc(c.key)}">${esc(c.label)}<span class="arrow">${c.key === sortKey && sortDir < 0 ? "▼" : "▲"}</span></th>`).join("");
+
+		const list = filteredRows();
+		const page = list.slice(0, shownLimit);
+		tbody.innerHTML = page.length
+			? page.map(r => `<tr class="main${open.has(r.i) ? " open" : ""}" data-i="${r.i}">${cols.map(c => `<td class="${c.cls || ""}">${c.html(r)}</td>`).join("")}</tr>`
+				+ (open.has(r.i) ? `<tr class="detail"><td colspan="${cols.length}">${detailHtml(r)}</td></tr>` : "")).join("")
+			: `<tr><td class="empty" colspan="${cols.length}">No contacts match this filter.</td></tr>`;
+		const more = $("showMore");
+		more.hidden = list.length <= shownLimit;
+		more.textContent = `Show ${Math.min(PAGE, list.length - shownLimit)} more (${list.length - shownLimit} hidden)`;
+	}
+
+	chips.addEventListener("click", e => {
+		const b = e.target.closest("[data-f]");
+		if (b) { filter = b.dataset.f; shownLimit = PAGE; render(); }
+	});
+	search.addEventListener("input", () => { query = search.value; shownLimit = PAGE; render(); });
+	thead.addEventListener("click", e => {
+		const th = e.target.closest("[data-k]");
+		if (!th) return;
+		if (sortKey === th.dataset.k) sortDir = -sortDir; else { sortKey = th.dataset.k; sortDir = 1; }
+		render();
+	});
+	tbody.addEventListener("click", e => {
+		if (e.target.closest("tr.detail")) return;
+		const tr = e.target.closest("tr.main");
+		if (!tr) return;
+		const i = Number(tr.dataset.i);
+		open.has(i) ? open.delete(i) : open.add(i);
+		render();
+	});
+	$("showMore").addEventListener("click", () => { shownLimit += PAGE; render(); });
+
+	// ---- Download ----
+	function csvField(v) {
+		let s = String(v ?? "");
+		if (/^[=+\-@]/.test(s)) s = "'" + s; // keep spreadsheets from running it as a formula
+		return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+	}
+	function download(list, suffix) {
+		const cols = current.run.cols;
+		const head = ["email", ...cols, "result", "reason", "suggested_fix", "mailbox_exists", "catch_all", "disposable",
+			"role_account", "mailbox_disabled", "inbox_full", "free_provider", "has_mail_server", "valid_format", "mail_server", "server_reply"];
+		const lines = [head.map(csvField).join(",")];
+		for (const r of list) {
+			const x = r.result || {};
+			lines.push([
+				r.email, ...cols.map(c => r.contact[c] || ""),
+				r.status === "queued" ? "not checked yet" : r.status, reasonFor(r), suggestion(r),
+				yn(x.smtp?.is_deliverable), yn(x.smtp?.is_catch_all), yn(x.misc?.is_disposable), yn(x.misc?.is_role_account),
+				yn(x.smtp?.is_disabled), yn(x.smtp?.has_full_inbox), yn(x.misc?.is_b2c), yn(x.mx?.accepts_mail),
+				yn(x.syntax?.is_valid_syntax), mxHost(x), x.smtp?.error?.message || (typeof x.error === "string" ? x.error : "")
+			].map(csvField).join(","));
+		}
+		const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+		const a = document.createElement("a");
+		a.href = URL.createObjectURL(blob);
+		const base = current.run.name.replace(/\.(csv|txt)$/i, "").replace(/[^\w.-]+/g, "-").slice(0, 40);
+		a.download = `${base}-${suffix}-${new Date().toISOString().slice(0, 10)}.csv`;
+		document.body.appendChild(a);
+		a.click();
+		a.remove();
+		setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+	}
+	$("dlItems").addEventListener("click", e => {
+		const b = e.target.closest("[data-dl]");
+		if (!b || !current) return;
+		const k = b.dataset.dl;
+		// "shown" follows the table's filter and search; the presets ignore them.
+		const list = k === "shown" ? filteredRows()
+			: k === "all" ? current.rows
+			: current.rows.filter(r => k === "usable" ? (r.status === "safe" || r.status === "risky") : r.status === k);
+		download(list, k);
+		$("dlMenu").open = false;
+	});
+	document.addEventListener("click", e => { if (!e.target.closest("#dlMenu")) $("dlMenu").open = false; });
+
+	// ---- Start-up ----
+	renderRuns();
+	if (runs.length) openRun(runs[0].id, false);
 </script>
 </body>
 </html>

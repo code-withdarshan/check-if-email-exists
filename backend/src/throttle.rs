@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::config::ThrottleConfig;
+use serde::Serialize;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -178,6 +179,24 @@ impl Throttle {
 	}
 }
 
+/// Usage of one throttle window. Windows start at the first request after the
+/// previous one expired, so `resets_in_secs` is not tied to the clock.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WindowUsage {
+	pub used: u32,
+	pub limit: u32,
+	pub resets_in_secs: u64,
+}
+
+/// Usage of every configured throttle window; unconfigured ones are `None`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ThrottleUsage {
+	pub per_second: Option<WindowUsage>,
+	pub per_minute: Option<WindowUsage>,
+	pub per_hour: Option<WindowUsage>,
+	pub per_day: Option<WindowUsage>,
+}
+
 #[derive(Debug, Default)]
 pub struct ThrottleManager {
 	inner: Arc<Mutex<Throttle>>,
@@ -194,6 +213,48 @@ impl ThrottleManager {
 		}
 		throttle.increment_counters();
 		Ok(())
+	}
+
+	/// Snapshot of how much of each configured limit is used.
+	pub async fn usage(&self) -> ThrottleUsage {
+		let mut throttle = self.inner.lock().await;
+		throttle.reset_if_needed();
+		let now = Instant::now();
+		let window = |limit: Option<u32>, used: u32, length: u64, since: Instant| {
+			limit.map(|limit| WindowUsage {
+				used,
+				limit,
+				resets_in_secs: Duration::from_secs(length)
+					.saturating_sub(now.duration_since(since))
+					.as_secs(),
+			})
+		};
+		ThrottleUsage {
+			per_second: window(
+				self.config.max_requests_per_second,
+				throttle.requests_per_second,
+				1,
+				throttle.last_reset_second,
+			),
+			per_minute: window(
+				self.config.max_requests_per_minute,
+				throttle.requests_per_minute,
+				60,
+				throttle.last_reset_minute,
+			),
+			per_hour: window(
+				self.config.max_requests_per_hour,
+				throttle.requests_per_hour,
+				3600,
+				throttle.last_reset_hour,
+			),
+			per_day: window(
+				self.config.max_requests_per_day,
+				throttle.requests_per_day,
+				86400,
+				throttle.last_reset_day,
+			),
+		}
 	}
 
 	pub fn new(config: ThrottleConfig) -> Self {
@@ -237,6 +298,25 @@ mod tests {
 
 		// Should allow more requests
 		assert_eq!(manager.try_acquire().await, Ok(()));
+	}
+
+	#[tokio::test]
+	async fn test_usage_reports_configured_windows() {
+		let manager = ThrottleManager::new(ThrottleConfig {
+			max_requests_per_minute: Some(10),
+			max_requests_per_day: Some(300),
+			..Default::default()
+		});
+		manager.try_acquire().await.unwrap();
+		manager.try_acquire().await.unwrap();
+
+		let usage = manager.usage().await;
+		assert_eq!(usage.per_second, None);
+		assert_eq!(usage.per_hour, None);
+		let day = usage.per_day.unwrap();
+		assert_eq!((day.used, day.limit), (2, 300));
+		assert!(day.resets_in_secs <= 86400);
+		assert_eq!(usage.per_minute.unwrap().used, 2);
 	}
 }
 

@@ -59,6 +59,7 @@ pub fn create_routes(
 		.or(v1::bulk::get_progress::v1_get_bulk_job_progress(
 			Arc::clone(&config),
 		))
+		.or(v1::usage::v1_get_usage(Arc::clone(&config)))
 		.or(v1::bulk::get_results::v1_get_bulk_job_results(config))
 		.recover(handle_rejection)
 }
