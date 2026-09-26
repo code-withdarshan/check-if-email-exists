@@ -9,6 +9,7 @@ use tokio::net::TcpListener;
 
 enum Reply {
 	Text(&'static str),
+	TextThenDisconnect(&'static str),
 	Disconnect,
 	Stall,
 	RejectGreeting,
@@ -78,6 +79,10 @@ async fn verify_with_behavior(
 						}
 					}) {
 						Reply::Text(text) => text,
+						Reply::TextThenDisconnect(text) => {
+							stream.get_mut().write_all(text.as_bytes()).await.unwrap();
+							break;
+						}
 						Reply::Disconnect => break,
 						Reply::RejectGreeting => unreachable!("Handled before the greeting"),
 						Reply::Stall => {
@@ -372,6 +377,23 @@ async fn gmail_missing_mailbox_with_policy_code_is_invalid() {
 	.await;
 	assert_eq!(reachable(&result), Reachable::Invalid);
 	assert_eq!(debug.probes[1].response.as_ref().unwrap().code, "550");
+}
+
+#[tokio::test]
+async fn server_hanging_up_after_rejection_keeps_invalid_result() {
+	let (result, _, commands) = verify(
+		"example.com",
+		vec![vec![
+			Reply::Text(MISSING),
+			Reply::TextThenDisconnect(MISSING),
+		]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Invalid);
+	assert!(commands
+		.iter()
+		.any(|command| command.contains("target@example.com")));
 }
 
 #[tokio::test]

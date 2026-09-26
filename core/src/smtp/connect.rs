@@ -419,10 +419,9 @@ async fn create_smtp_future(
 		result?
 	};
 
-	smtp_transport
-		.quit()
-		.await
-		.map_err(SmtpError::AsyncSmtpError)?;
+	// The result is already known; a server that hangs up after replying
+	// must not turn it into an error.
+	let _ = tokio::time::timeout(Duration::from_secs(2), smtp_transport.quit()).await;
 
 	Ok((is_catch_all, deliverability))
 }
