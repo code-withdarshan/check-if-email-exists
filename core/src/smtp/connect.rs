@@ -25,6 +25,7 @@ use rand::rngs::SmallRng;
 use rand::{distributions::Alphanumeric, Rng, SeedableRng};
 use std::iter;
 use std::str::FromStr;
+use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, BufStream};
 use tokio::net::TcpStream;
 
@@ -152,11 +153,13 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 	to_email: &EmailAddress,
 	stage: SmtpProbeStage,
 	attempt: usize,
+	connection: usize,
 	debug: &mut SmtpDebug,
 ) -> Result<Deliverability, SmtpError> {
 	// Insert before awaiting so timeouts retain the stage that failed.
 	debug.probes.push(SmtpProbe {
 		attempt,
+		connection: Some(connection),
 		stage,
 		response: None,
 		error: None,
@@ -293,10 +296,33 @@ async fn smtp_is_catch_all<S: AsyncBufRead + AsyncWrite + Unpin + Send>(
 		&random_email,
 		SmtpProbeStage::CatchAll,
 		attempt,
+		1,
 		debug,
 	)
 	.await
 	.map(|result| result.is_deliverable)
+}
+
+/// Open a clean recipient session, retaining its stage even if the handshake fails.
+async fn connect_for_recipient(
+	to_email: &EmailAddress,
+	mx_host: &str,
+	verif_method: &VerifMethodSmtp,
+	attempt: usize,
+	connection: usize,
+	debug: &mut SmtpDebug,
+) -> Result<SmtpTransport<BufStream<Box<dyn AsyncReadWrite>>>, SmtpError> {
+	debug.probes.push(SmtpProbe {
+		attempt,
+		connection: Some(connection),
+		stage: SmtpProbeStage::Recipient,
+		response: None,
+		error: None,
+	});
+	let transport = connect_to_smtp_host(to_email, mx_host, verif_method).await?;
+	// The RCPT check adds the actual reply record after a successful handshake.
+	debug.probes.pop();
+	Ok(transport)
 }
 
 /// Creates an SMTP future for email verification.
@@ -328,17 +354,29 @@ async fn create_smtp_future(
 			is_disabled: false,
 		}
 	} else {
+		let mut connection = 1;
+		if !debug.catch_all_skipped {
+			// A recipient must be the first RCPT in its own TCP session. A server
+			// may respond differently to subsequent recipients after the random
+			// catch-all rejection. RSET alone would still share that session.
+			let _ = tokio::time::timeout(Duration::from_secs(2), smtp_transport.quit()).await;
+			drop(smtp_transport);
+			connection += 1;
+			smtp_transport =
+				connect_for_recipient(to_email, mx_host, verif_method, attempt, connection, debug)
+					.await?;
+		}
 		let mut result = check_email_deliverability(
 			&mut smtp_transport,
 			to_email,
 			SmtpProbeStage::Recipient,
 			attempt,
+			connection,
 			debug,
 		)
 		.await;
 
-		// Some SMTP servers automatically close the connection after an error,
-		// so we should reconnect to perform a next command.
+		// Retry an interrupted recipient probe once, in another fresh session.
 		//
 		// Unfortunately `smtp_transport.is_connected()` doesn't report about this,
 		// so we can only check for "io: incomplete" SMTP error being returned.
@@ -352,13 +390,24 @@ async fn create_smtp_future(
 					"Got `io: incomplete` error, reconnecting"
 				);
 
-				let _ = smtp_transport.quit().await;
-				smtp_transport = connect_to_smtp_host(to_email, mx_host, verif_method).await?;
+				let _ = tokio::time::timeout(Duration::from_secs(2), smtp_transport.quit()).await;
+				drop(smtp_transport);
+				connection += 1;
+				smtp_transport = connect_for_recipient(
+					to_email,
+					mx_host,
+					verif_method,
+					attempt,
+					connection,
+					debug,
+				)
+				.await?;
 				result = check_email_deliverability(
 					&mut smtp_transport,
 					to_email,
 					SmtpProbeStage::Recipient,
 					attempt,
+					connection,
 					debug,
 				)
 				.await;

@@ -90,10 +90,14 @@ pub struct SmtpReply {
 	pub messages: Vec<String>,
 }
 
-/// Evidence from one RCPT TO command. No credentials or message body are recorded.
+/// Evidence for a recipient probe, including connection failures.
+/// No credentials or message body are recorded.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SmtpProbe {
 	pub attempt: usize,
+	/// Connection number within this attempt; absent in older saved results.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub connection: Option<usize>,
 	pub stage: SmtpProbeStage,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub response: Option<SmtpReply>,

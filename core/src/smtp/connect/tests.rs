@@ -11,23 +11,48 @@ enum Reply {
 	Text(&'static str),
 	Disconnect,
 	Stall,
+	RejectGreeting,
 }
 
 // Exercise real SMTP parsing/transactions against a local scripted server.
 // No DNS lookup, external mail server or actual message delivery is used.
 async fn verify(
 	domain: &str,
-	sessions: Vec<Vec<Reply>>,
+	attempts: Vec<Vec<Reply>>,
 	timeout: Duration,
+) -> (Result<SmtpDetails, SmtpError>, SmtpDebug, Vec<String>) {
+	verify_with_behavior(domain, attempts, timeout, false).await
+}
+
+async fn verify_with_behavior(
+	domain: &str,
+	attempts: Vec<Vec<Reply>>,
+	timeout: Duration,
+	accept_extra_recipients: bool,
 ) -> (Result<SmtpDetails, SmtpError>, SmtpDebug, Vec<String>) {
 	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let port = listener.local_addr().unwrap().port();
-	let retries = sessions.len();
+	let retries = attempts.len();
+	// Every scripted probe must arrive over a separate connection, even within
+	// one attempt. This also detects accidental reuse after a catch-all refusal.
+	let sessions: Vec<_> = attempts
+		.into_iter()
+		.flatten()
+		.map(|reply| vec![reply])
+		.collect();
 	let server = tokio::spawn(async move {
 		let mut commands = Vec::new();
 		for session in sessions {
 			let (stream, _) = listener.accept().await.unwrap();
 			let mut stream = BufReader::new(stream);
+			if matches!(session.first(), Some(Reply::RejectGreeting)) {
+				stream
+					.get_mut()
+					.write_all(b"421 4.3.2 Service unavailable\r\n")
+					.await
+					.unwrap();
+				continue;
+			}
 			stream
 				.get_mut()
 				.write_all(b"220 mock.example ESMTP\r\n")
@@ -43,9 +68,18 @@ async fn verify(
 				let reply = if line.starts_with("EHLO ") || line.starts_with("MAIL FROM:") {
 					"250 mock.example OK\r\n"
 				} else if line.starts_with("RCPT TO:") {
-					match replies.next().expect("Unexpected extra recipient probe") {
+					match replies.next().unwrap_or_else(|| {
+						if accept_extra_recipients {
+							// Simulate a server that validates only the first RCPT and
+							// misleadingly accepts later recipients in the same session.
+							Reply::Text(ACCEPTED)
+						} else {
+							panic!("Unexpected extra recipient probe on a reused connection");
+						}
+					}) {
 						Reply::Text(text) => text,
 						Reply::Disconnect => break,
+						Reply::RejectGreeting => unreachable!("Handled before the greeting"),
 						Reply::Stall => {
 							// The client times out and drops the stream.
 							let mut rest = String::new();
@@ -117,6 +151,15 @@ async fn accepted_recipient_retains_both_replies() {
 	assert_eq!(json["probes"][0]["response"]["code"], "550");
 	assert_eq!(json["probes"][1]["response"]["messages"][0], "2.1.5 OK");
 	assert_eq!(json["catch_all_skipped"], false);
+	assert_eq!(json["probes"][0]["connection"], 1);
+	assert_eq!(json["probes"][1]["connection"], 2);
+	assert_eq!(
+		commands
+			.iter()
+			.filter(|command| command.starts_with("EHLO "))
+			.count(),
+		2
+	);
 	assert!(commands.iter().all(|command| !command.starts_with("DATA")));
 }
 
@@ -227,9 +270,93 @@ async fn provider_skip_is_explicit_and_still_checks_target() {
 	assert!(debug.catch_all_skipped);
 	assert_eq!(debug.probes.len(), 1);
 	assert_eq!(debug.probes[0].stage, SmtpProbeStage::Recipient);
+	assert_eq!(debug.probes[0].connection, Some(1));
+	assert_eq!(
+		commands
+			.iter()
+			.filter(|command| command.starts_with("EHLO "))
+			.count(),
+		1
+	);
 	assert!(commands
 		.iter()
 		.any(|command| command.contains("target@gmail.com")));
+}
+
+#[tokio::test]
+async fn shared_session_acceptance_cannot_mask_a_missing_recipient() {
+	let (result, debug, commands) = verify_with_behavior(
+		"example.com",
+		vec![vec![Reply::Text(MISSING), Reply::Text(MISSING)]],
+		Duration::from_secs(2),
+		true,
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Invalid);
+	assert_eq!(debug.probes[1].response.as_ref().unwrap().code, "550");
+	assert_eq!(debug.probes[1].connection, Some(2));
+	assert_eq!(
+		commands
+			.iter()
+			.filter(|command| command.starts_with("EHLO "))
+			.count(),
+		2
+	);
+}
+
+#[tokio::test]
+async fn recipient_reconnect_retains_all_connection_evidence() {
+	let (result, debug, _) = verify(
+		"example.com",
+		vec![vec![
+			Reply::Text(MISSING),
+			Reply::Disconnect,
+			Reply::Text(ACCEPTED),
+		]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Safe);
+	assert_eq!(
+		debug
+			.probes
+			.iter()
+			.map(|probe| probe.connection)
+			.collect::<Vec<_>>(),
+		vec![Some(1), Some(2), Some(3)]
+	);
+	assert!(debug.probes[1].error.is_some());
+	assert_eq!(debug.probes[2].response.as_ref().unwrap().code, "250");
+}
+
+#[tokio::test]
+async fn fresh_recipient_connection_failure_is_unknown_with_correct_stage() {
+	let (result, debug, _) = verify(
+		"example.com",
+		vec![vec![Reply::Text(MISSING), Reply::RejectGreeting]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Unknown);
+	assert_eq!(debug.probes.len(), 2);
+	assert_eq!(debug.probes[1].stage, SmtpProbeStage::Recipient);
+	assert_eq!(debug.probes[1].connection, Some(2));
+	assert!(debug.probes[1]
+		.error
+		.as_ref()
+		.unwrap()
+		.contains("Service unavailable"));
+}
+
+#[test]
+fn older_probe_results_remain_deserializable() {
+	let probe: SmtpProbe = serde_json::from_value(serde_json::json!({
+		"attempt": 1,
+		"stage": "recipient",
+		"response": { "code": "250", "messages": ["2.1.5 OK"] }
+	}))
+	.unwrap();
+	assert_eq!(probe.connection, None);
 }
 
 #[tokio::test]
