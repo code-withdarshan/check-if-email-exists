@@ -14,6 +14,10 @@
 		"nosotrosorg.com.": { "rules": ["SmtpTimeout45s"] }
 	},
 	"by_mx_suffix": {
+		".olc.protection.outlook.com.": {
+			"rules": ["SkipCatchAll"],
+			"_comment": "Outlook consumer servers can reject a second RCPT TO in the same transaction with 4.5.3 ATTR38. Probe only the requested mailbox."
+		},
 		".antispamcloud.com.": {
 			"rules": ["SmtpTimeout45s", "SkipCatchAll"],
 			"_comment": "Some <RCPT TO> take 30s to respond (sometimes only on 2nd attempt, not deterministic), so we skip the catch-all one, and bump the timeout to well over 30s."

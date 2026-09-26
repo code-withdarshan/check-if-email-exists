@@ -89,6 +89,29 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn consumer_outlook_mx_skips_catch_all_for_all_alias_domains() {
+		for (domain, host) in [
+			("outlook.com", "outlook-com.olc.protection.outlook.com."),
+			("outlook.fr", "eur.olc.protection.outlook.com."),
+			("live.com", "nam.olc.protection.outlook.com."),
+			("msn.com", "nam.olc.protection.outlook.com."),
+		] {
+			assert!(has_rule(domain, host, &Rule::SkipCatchAll));
+		}
+	}
+
+	#[test]
+	fn consumer_outlook_rule_does_not_skip_business_or_unrelated_mx() {
+		for host in [
+			"example-com.mail.protection.outlook.com.",
+			"mx.example.com.",
+			"outlook-com.olc.protection.outlook.com.example.com.",
+		] {
+			assert!(!has_rule("example.com", host, &Rule::SkipCatchAll));
+		}
+	}
+
+	#[test]
 	fn should_skip_catch_all() {
 		assert!(has_rule(
 			"gmail.com",
