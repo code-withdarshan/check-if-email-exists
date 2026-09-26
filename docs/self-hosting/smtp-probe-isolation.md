@@ -16,11 +16,17 @@ Update these files in the **Rust backend** checkout on the VPS:
 - `core/src/smtp/connect.rs`
 - `core/src/smtp/mod.rs`
 - `core/src/smtp/connect/tests.rs`
+- `core/src/smtp/parser.rs`
+- `core/src/rules.json` (compiled into the binary)
+- `core/src/rules.rs`
+
+The tests depend on the `parser.rs` changes and fail without them. Simpler: pull
+the whole commit range instead of copying files.
 
 Run from that backend checkout, stopping if either command fails:
 
 ```bash
-cargo test -p check-if-email-exists --lib smtp::connect::tests --locked
+cargo test -p check-if-email-exists --lib --locked -- smtp:: rules::
 SQLX_OFFLINE=true cargo build --release --bin reacher_backend --locked
 ```
 

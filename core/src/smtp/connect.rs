@@ -202,13 +202,15 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 			let permanent = matches!(&err, AsyncSmtpError::Permanent(_));
 			let error = SmtpError::AsyncSmtpError(err);
 			// A policy refusal concerns this probe/sender, not mailbox existence.
-			let policy_refusal = probe.response.as_ref().is_some_and(|response| {
-				response.messages.iter().any(|line| {
-					line.split_whitespace()
-						.next()
-						.is_some_and(|code| code.starts_with("5.7."))
-				})
-			});
+			// Gmail is an exception: it can state a missing mailbox with 5.7.1.
+			let policy_refusal = !err_string.contains("email doesn't exist")
+				&& probe.response.as_ref().is_some_and(|response| {
+					response.messages.iter().any(|line| {
+						line.split_whitespace()
+							.next()
+							.is_some_and(|code| code.starts_with("5.7."))
+					})
+				});
 			if policy_refusal || error.get_description().is_some() {
 				return Err(error);
 			}

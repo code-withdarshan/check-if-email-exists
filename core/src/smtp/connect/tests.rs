@@ -360,6 +360,21 @@ fn older_probe_results_remain_deserializable() {
 }
 
 #[tokio::test]
+async fn gmail_missing_mailbox_with_policy_code_is_invalid() {
+	let (result, debug, _) = verify(
+		"example.com",
+		vec![vec![
+			Reply::Text(MISSING),
+			Reply::Text("550 5.7.1 Email doesn't exist. Please forward it\r\n"),
+		]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Invalid);
+	assert_eq!(debug.probes[1].response.as_ref().unwrap().code, "550");
+}
+
+#[tokio::test]
 async fn target_full_inbox_stays_risky_and_disabled_stays_invalid() {
 	for (reply, expected) in [
 		(
