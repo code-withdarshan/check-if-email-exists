@@ -16,6 +16,7 @@
 
 use async_recursion::async_recursion;
 use async_smtp::commands::{MailCommand, RcptCommand};
+use async_smtp::error::Error as AsyncSmtpError;
 use async_smtp::extension::ClientId;
 use async_smtp::{SmtpClient, SmtpTransport};
 use fast_socks5::client::Config;
@@ -29,7 +30,7 @@ use tokio::net::TcpStream;
 
 use super::parser;
 use super::verif_method::VerifMethodSmtp;
-use super::{SmtpDetails, SmtpError};
+use super::{SmtpDebug, SmtpDetails, SmtpError, SmtpProbe, SmtpProbeStage, SmtpReply};
 use crate::rules::{has_rule, Rule};
 use crate::{EmailAddress, LOG_TARGET};
 
@@ -149,35 +150,81 @@ struct Deliverability {
 async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>(
 	smtp_transport: &mut SmtpTransport<S>,
 	to_email: &EmailAddress,
+	stage: SmtpProbeStage,
+	attempt: usize,
+	debug: &mut SmtpDebug,
 ) -> Result<Deliverability, SmtpError> {
-	match smtp_transport
+	// Insert before awaiting so timeouts retain the stage that failed.
+	debug.probes.push(SmtpProbe {
+		attempt,
+		stage,
+		response: None,
+		error: None,
+	});
+	let result = smtp_transport
 		.get_mut()
 		.command(RcptCommand::new(to_email.clone().into_inner(), vec![]))
-		.await
-	{
-		// According to RFC 5321, `RCPT TO` command succeeds with 250 and
-		// 251 codes only (no 3xx codes at all):
-		// https://tools.ietf.org/html/rfc5321#page-56
-		//
-		// Where the 251 code is used for forwarding, which is not our case,
-		// because we always deliver to the SMTP server hosting the address
-		// itself.
-		//
-		// So, if `response.is_positive()` (which is a condition for
-		// returning `Ok` from the `command()` method above), then delivery
-		// succeeds, accordingly to RFC 5321.
-		Ok(_) => Ok(Deliverability {
+		.await;
+	let probe = debug.probes.last_mut().expect("Just inserted probe");
+	let response = match &result {
+		Ok(response) => Some(response),
+		Err(AsyncSmtpError::Transient(response) | AsyncSmtpError::Permanent(response)) => {
+			Some(response)
+		}
+		Err(error) => {
+			probe.error = Some(error.to_string());
+			None
+		}
+	};
+	probe.response = response.map(|response| SmtpReply {
+		code: response.code.to_string(),
+		messages: response.message.clone(),
+	});
+	match result {
+		// RCPT acceptance is evidence for this probe, not a delivery guarantee.
+		Ok(response) if response.has_code(250) || response.has_code(251) => Ok(Deliverability {
 			has_full_inbox: false,
-			is_deliverable: true, // response.is_positive()
+			is_deliverable: true,
 			is_disabled: false,
 		}),
+		Ok(response) => Err(SmtpError::AnyhowError(anyhow::anyhow!(
+			"Inconclusive RCPT reply: {} {}",
+			response.code,
+			response.message.join("; ")
+		))),
 		Err(err) => {
 			// We cast to lowercase, because our matched strings below are all
 			// lowercase.
 			let err_string = err.to_string().to_lowercase();
+			let permanent = matches!(&err, AsyncSmtpError::Permanent(_));
+			let error = SmtpError::AsyncSmtpError(err);
+			// A policy refusal concerns this probe/sender, not mailbox existence.
+			let policy_refusal = probe.response.as_ref().is_some_and(|response| {
+				response.messages.iter().any(|line| {
+					line.split_whitespace()
+						.next()
+						.is_some_and(|code| code.starts_with("5.7."))
+				})
+			});
+			if policy_refusal || error.get_description().is_some() {
+				return Err(error);
+			}
+			if probe.stage == SmtpProbeStage::CatchAll {
+				// Only an explicit permanent recipient rejection establishes no catch-all.
+				// Full/disabled/random recipients and temporary failures are inconclusive.
+				return if permanent && parser::is_invalid(&err_string, to_email) {
+					Ok(Deliverability {
+						has_full_inbox: false,
+						is_deliverable: false,
+						is_disabled: false,
+					})
+				} else {
+					Err(error)
+				};
+			}
 
 			// Check if the email account has been disabled or blocked.
-			if parser::is_disabled_account(&err_string) {
+			if permanent && parser::is_disabled_account(&err_string) {
 				return Ok(Deliverability {
 					has_full_inbox: false,
 					is_deliverable: false,
@@ -194,17 +241,8 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 				});
 			}
 
-			// Check error messages that say that user can actually receive
-			// emails.
-			// 4.2.1 The user you are trying to contact is receiving mail at a rate that
-			if err_string
-				.contains("the user you are trying to contact is receiving mail at a rate that")
-			{
-				return Ok(Deliverability {
-					has_full_inbox: false,
-					is_deliverable: true,
-					is_disabled: false,
-				});
+			if !permanent {
+				return Err(error);
 			}
 
 			// Check that the mailbox doesn't exist.
@@ -217,7 +255,7 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 			}
 
 			// Return all unparsable errors,.
-			Err(SmtpError::AsyncSmtpError(err))
+			Err(error)
 		}
 	}
 }
@@ -228,8 +266,11 @@ async fn smtp_is_catch_all<S: AsyncBufRead + AsyncWrite + Unpin + Send>(
 	domain: &str,
 	host: &str,
 	to_email: &EmailAddress,
+	attempt: usize,
+	debug: &mut SmtpDebug,
 ) -> Result<bool, SmtpError> {
 	if has_rule(domain, host, &Rule::SkipCatchAll) {
+		debug.catch_all_skipped = true;
 		tracing::debug!(
 			target: LOG_TARGET,
 			email=to_email.to_string(),
@@ -247,9 +288,15 @@ async fn smtp_is_catch_all<S: AsyncBufRead + AsyncWrite + Unpin + Send>(
 		.collect();
 	let random_email = EmailAddress::new(format!("{}@{}", random_email, domain))?;
 
-	check_email_deliverability(smtp_transport, &random_email)
-		.await
-		.map(|result| result.is_deliverable)
+	check_email_deliverability(
+		smtp_transport,
+		&random_email,
+		SmtpProbeStage::CatchAll,
+		attempt,
+		debug,
+	)
+	.await
+	.map(|result| result.is_deliverable)
 }
 
 /// Creates an SMTP future for email verification.
@@ -258,14 +305,22 @@ async fn create_smtp_future(
 	mx_host: &str,
 	domain: &str,
 	verif_method: &VerifMethodSmtp,
+	attempt: usize,
+	debug: &mut SmtpDebug,
 ) -> Result<(bool, Deliverability), SmtpError> {
 	// FIXME If the SMTP is not connectable, we should actually return an
 	// Ok(SmtpDetails { can_connect_smtp: false, ... }).
 	let mut smtp_transport = connect_to_smtp_host(to_email, mx_host, verif_method).await?;
 
-	let is_catch_all = smtp_is_catch_all(&mut smtp_transport, domain, mx_host, to_email)
-		.await
-		.unwrap_or(false);
+	let is_catch_all = smtp_is_catch_all(
+		&mut smtp_transport,
+		domain,
+		mx_host,
+		to_email,
+		attempt,
+		debug,
+	)
+	.await?;
 	let deliverability = if is_catch_all {
 		Deliverability {
 			has_full_inbox: false,
@@ -273,7 +328,14 @@ async fn create_smtp_future(
 			is_disabled: false,
 		}
 	} else {
-		let mut result = check_email_deliverability(&mut smtp_transport, to_email).await;
+		let mut result = check_email_deliverability(
+			&mut smtp_transport,
+			to_email,
+			SmtpProbeStage::Recipient,
+			attempt,
+			debug,
+		)
+		.await;
 
 		// Some SMTP servers automatically close the connection after an error,
 		// so we should reconnect to perform a next command.
@@ -292,7 +354,14 @@ async fn create_smtp_future(
 
 				let _ = smtp_transport.quit().await;
 				smtp_transport = connect_to_smtp_host(to_email, mx_host, verif_method).await?;
-				result = check_email_deliverability(&mut smtp_transport, to_email).await;
+				result = check_email_deliverability(
+					&mut smtp_transport,
+					to_email,
+					SmtpProbeStage::Recipient,
+					attempt,
+					debug,
+				)
+				.await;
 			}
 		}
 
@@ -314,8 +383,10 @@ async fn check_smtp_without_retry(
 	mx_host: &str,
 	domain: &str,
 	verif_method: &VerifMethodSmtp,
+	attempt: usize,
+	debug: &mut SmtpDebug,
 ) -> Result<SmtpDetails, SmtpError> {
-	let fut = create_smtp_future(to_email, mx_host, domain, verif_method);
+	let fut = create_smtp_future(to_email, mx_host, domain, verif_method, attempt, debug);
 
 	let (is_catch_all, deliverability) = match verif_method.config.smtp_timeout {
 		Some(smtp_timeout) => {
@@ -348,6 +419,7 @@ pub async fn check_smtp_with_retry(
 	verif_method: &VerifMethodSmtp,
 	// Number of remaining retries.
 	count: usize,
+	debug: &mut SmtpDebug,
 ) -> Result<SmtpDetails, SmtpError> {
 	tracing::debug!(
 		target: LOG_TARGET,
@@ -359,7 +431,16 @@ pub async fn check_smtp_with_retry(
 		"Check SMTP"
 	);
 
-	let result = check_smtp_without_retry(to_email, mx_host, domain, verif_method).await;
+	let attempt = verif_method.config.retries - count + 1;
+	let result =
+		check_smtp_without_retry(to_email, mx_host, domain, verif_method, attempt, debug).await;
+	if let Err(error) = &result {
+		if let Some(probe) = debug.probes.last_mut() {
+			if probe.attempt == attempt && probe.response.is_none() && probe.error.is_none() {
+				probe.error = Some(error.to_string());
+			}
+		}
+	}
 
 	tracing::debug!(
 		target: LOG_TARGET,
@@ -388,9 +469,13 @@ pub async fn check_smtp_with_retry(
 					email=to_email.to_string(),
 					"Potential greylisting detected, retrying"
 				);
-				check_smtp_with_retry(to_email, mx_host, domain, verif_method, count - 1).await
+				check_smtp_with_retry(to_email, mx_host, domain, verif_method, count - 1, debug)
+					.await
 			}
 		}
 		_ => result,
 	}
 }
+
+#[cfg(test)]
+mod tests;

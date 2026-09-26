@@ -75,11 +75,43 @@ pub struct SmtpDetails {
 	pub is_disabled: bool,
 }
 
+/// Which recipient was checked by an SMTP probe.
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpProbeStage {
+	CatchAll,
+	Recipient,
+}
+
+/// An SMTP reply, including its code and all message lines.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SmtpReply {
+	pub code: String,
+	pub messages: Vec<String>,
+}
+
+/// Evidence from one RCPT TO command. No credentials or message body are recorded.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SmtpProbe {
+	pub attempt: usize,
+	pub stage: SmtpProbeStage,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub response: Option<SmtpReply>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub error: Option<String>,
+}
+
 /// Debug information on how the SMTP verification went.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct SmtpDebug {
 	/// The verification method used for the email.
 	pub verif_method: SmtpDebugVerifMethod,
+	/// Whether provider rules intentionally omitted the catch-all probe.
+	#[serde(default)]
+	pub catch_all_skipped: bool,
+	/// Replies from every recipient probe, including failed attempts.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub probes: Vec<SmtpProbe>,
 }
 
 /// Get all email details we can from one single `EmailAddress`, without
@@ -109,6 +141,7 @@ pub async fn check_smtp(
 					.map_err(Into::into),
 					SmtpDebug {
 						verif_method: SmtpDebugVerifMethod::Headless,
+						..Default::default()
 					},
 				);
 			}
@@ -122,6 +155,7 @@ pub async fn check_smtp(
 						.map_err(Into::into),
 					SmtpDebug {
 						verif_method: SmtpDebugVerifMethod::Api,
+						..Default::default()
 					},
 				);
 			}
@@ -136,6 +170,7 @@ pub async fn check_smtp(
 					.map_err(Into::into),
 					SmtpDebug {
 						verif_method: SmtpDebugVerifMethod::Headless,
+						..Default::default()
 					},
 				);
 			}
@@ -165,22 +200,23 @@ pub async fn check_smtp(
 		input.verif_method.get_proxy(email_provider).cloned(),
 	);
 
-	(
-		check_smtp_with_retry(
-			to_email,
-			&host_str,
-			domain,
-			&verif_method,
-			verif_method.config.retries,
-		)
-		.await,
-		SmtpDebug {
-			verif_method: SmtpDebugVerifMethod::Smtp(SmtpDebugVerifMethodSmtp {
-				host: host_str,
-				verif_method: smtp_verif_method_config,
-			}),
-		},
+	let mut debug = SmtpDebug {
+		verif_method: SmtpDebugVerifMethod::Smtp(SmtpDebugVerifMethodSmtp {
+			host: host_str.clone(),
+			verif_method: smtp_verif_method_config,
+		}),
+		..Default::default()
+	};
+	let result = check_smtp_with_retry(
+		to_email,
+		&host_str,
+		domain,
+		&verif_method,
+		verif_method.config.retries,
+		&mut debug,
 	)
+	.await;
+	(result, debug)
 }
 
 #[cfg(test)]
