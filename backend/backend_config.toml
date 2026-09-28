@@ -38,7 +38,9 @@ from_email = "hello@localhost"
 # not set a timeout, i.e. the connection will wait indefinitely. If using a
 # proxy, this timeout includes both the time to connect to the proxy and the
 # time to connect to perform the whole SMTP verification. Also see:
-# `proxy.timeout_ms`.
+# `proxy.timeout_ms`. Without a proxy, opening the TCP connection is limited to
+# 10 seconds within this timeout, so an unreachable MX host fails fast and the
+# next MX host (up to 3 in total) can be tried.
 #
 # Env variable: RCH__SMTP_TIMEOUT
 smtp_timeout = 45

@@ -24,8 +24,8 @@ The repository includes SQL migrations, cached SQLx query metadata, Docker defin
 1. Parse the email, extract its domain, and calculate a normalized address.
 2. Look up MX records. Invalid syntax and absent MX records return early; DNS failures can produce `unknown`.
 3. Gather disposable, role-account, and consumer-provider flags. Gravatar and breach checks are optional core/CLI capabilities; the HTTP request type does not expose them.
-4. Select the lowest-preference-number MX and choose the verification method by provider. Gmail and most domains use SMTP; consumer Outlook and Yahoo default to browser-based account-recovery checks through ChromeDriver. Yahoo also has an optional HTTP method.
-5. For SMTP, inspect `MAIL FROM`/`RCPT TO` responses and optionally probe a random recipient for catch-all behavior. The SMTP path does not send a message body.
+4. Order the MX hosts by preference; the first chooses the verification method by provider, and up to two more are tried if it can't be reached (see [SMTP reply codes and backup MX hosts](docs/self-hosting/smtp-reply-codes-and-backup-mx.md)). Gmail and most domains use SMTP; consumer Outlook and Yahoo default to browser-based account-recovery checks through ChromeDriver. Yahoo also has an optional HTTP method.
+5. For SMTP, inspect `MAIL FROM`/`RCPT TO` responses and optionally probe a random recipient for catch-all behavior. Enhanced status codes (`5.1.1`, `5.2.1`, `4.2.2`, …) are classified before reply wording. The SMTP path does not send a message body.
 6. Return `safe`, `risky`, `invalid`, or `unknown`, with detailed syntax, MX, SMTP, miscellaneous, and timing fields.
 
 These results are estimates based on provider responses. Live accuracy, provider-page compatibility, and performance were not established by this review. Browser-based checks interact with recovery pages and should be validated separately using controlled accounts.

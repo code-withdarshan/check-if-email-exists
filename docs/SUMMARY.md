@@ -20,6 +20,8 @@
   * [Multiple Proxies](self-hosting/proxies/multiple-proxies.md)
 * [Reacher Configuration](self-hosting/reacher-configuration-v0.10.md)
 * [Debugging Reacher](self-hosting/debugging-reacher.md)
+  * [Independent SMTP recipient probes](self-hosting/smtp-probe-isolation.md)
+  * [SMTP reply codes and backup MX hosts](self-hosting/smtp-reply-codes-and-backup-mx.md)
 
 ## Advanced
 
