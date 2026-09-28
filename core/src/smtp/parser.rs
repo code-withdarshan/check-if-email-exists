@@ -110,6 +110,67 @@ pub fn is_invalid(e: &str, email: &EmailAddress) -> bool {
 	|| e.contains("permanent: 5.1.1")
 }
 
+/// What an RFC 3463 enhanced status code says about the mailbox itself.
+#[derive(Debug, PartialEq)]
+pub enum MailboxStatus {
+	Invalid,
+	Disabled,
+	FullInbox,
+}
+
+/// The first enhanced status code (e.g. `5.1.1`) starting any reply line.
+fn enhanced_code(messages: &[String]) -> Option<(u8, u16, u16)> {
+	messages.iter().find_map(|line| {
+		let mut parts = line.split_whitespace().next()?.split('.');
+		let class = parts.next()?.parse().ok()?;
+		let subject = parts.next()?.parse().ok()?;
+		let detail = parts.next()?.parse().ok()?;
+		(parts.next().is_none() && matches!(class, 2 | 4 | 5)).then_some((class, subject, detail))
+	})
+}
+
+/// Classify a RCPT reply by its enhanced status code, which is more reliable
+/// than wording. Codes that don't concern the mailbox return `None`.
+pub fn mailbox_status(messages: &[String]) -> Option<MailboxStatus> {
+	match enhanced_code(messages)? {
+		// Bad mailbox, mailbox moved, recipient domain has a null MX.
+		(5, 1, 1 | 6 | 10) => Some(MailboxStatus::Invalid),
+		// Microsoft 365 directory-based edge blocking: "550 5.4.1 Recipient
+		// address rejected: Access denied. AS(201806281)" means no such recipient.
+		(5, 4, 1)
+			if messages
+				.iter()
+				.any(|line| line.to_lowercase().contains("recipient address rejected")) =>
+		{
+			Some(MailboxStatus::Invalid)
+		}
+		(5, 2, 1) => Some(MailboxStatus::Disabled),
+		(4 | 5, 2, 2) => Some(MailboxStatus::FullInbox),
+		_ => None,
+	}
+}
+
+/// Narrower than `is_err_ip_blacklisted`: only wording that blames the
+/// sending IP's reputation, so it can override a mailbox status code.
+pub fn mentions_ip_reputation(e: &str) -> bool {
+	[
+		"blacklist",
+		"black list",
+		"blocklist",
+		"block list",
+		"dnsbl",
+		" rbl",
+		"spamhaus",
+		"spamcop",
+		"abusix",
+		"barracuda",
+		"reputation",
+		"sbrs",
+	]
+	.iter()
+	.any(|word| e.contains(word))
+}
+
 /// Check that the mailbox has a full inbox.
 pub fn is_full_inbox(e: &str) -> bool {
 	e.contains("insufficient")
@@ -127,12 +188,17 @@ pub fn is_full_inbox(e: &str) -> bool {
 /// Check if the email account has been disabled or blocked by the email
 /// provider.
 pub fn is_disabled_account(e: &str) -> bool {
-	// 554 The email account that you tried to reach is disabled. Learn more at https://support.google.com/mail/?p=DisabledUser"
-	e.contains("disabled")
-	// 554 delivery error: Sorry your message to <EMAIL> cannot be delivered. This account has been disabled or discontinued
- || e.contains("discontinued")
- //550 5.2.1 RACT MY.IP: Mailbox is inactive: <USER@hanmail.net><CRLF> (on hanmail.net)
- || e.contains("inactive")
+	// "Relaying disabled" or "service inactive" describe the server, not a mailbox.
+	let about_mailbox = ["account", "mailbox", "user", "recipient"]
+		.iter()
+		.any(|word| e.contains(word));
+	about_mailbox
+		// 554 The email account that you tried to reach is disabled. Learn more at https://support.google.com/mail/?p=DisabledUser"
+		&& (e.contains("disabled")
+		// 554 delivery error: Sorry your message to <EMAIL> cannot be delivered. This account has been disabled or discontinued
+		|| e.contains("discontinued")
+		//550 5.2.1 RACT MY.IP: Mailbox is inactive: <USER@hanmail.net><CRLF> (on hanmail.net)
+		|| e.contains("inactive"))
 }
 
 /// Check if the error is an IO "incomplete" error.
@@ -237,7 +303,9 @@ pub fn is_err_needs_rdns(e: &SmtpError) -> bool {
 #[cfg(test)]
 mod tests {
 
-	use super::{is_err_ip_blacklisted, is_invalid};
+	use super::{
+		is_disabled_account, is_err_ip_blacklisted, is_invalid, mailbox_status, MailboxStatus,
+	};
 	use crate::EmailAddress;
 	use crate::SmtpError::AsyncSmtpError;
 	use async_smtp::{
@@ -264,6 +332,50 @@ mod tests {
 			"permanent: 5.1.1 MXIN501 mailbox foo@bar.baz unknown (on @virginmedia.com)",
 			&email
 		));
+	}
+
+	#[test]
+	fn test_mailbox_status() {
+		let status = |lines: &[&str]| {
+			mailbox_status(&lines.iter().map(|l| l.to_string()).collect::<Vec<_>>())
+		};
+		assert_eq!(
+			status(&["5.1.1 User unknown"]),
+			Some(MailboxStatus::Invalid)
+		);
+		assert_eq!(
+			status(&["Sorry", "5.1.6 Mailbox moved"]),
+			Some(MailboxStatus::Invalid)
+		);
+		assert_eq!(
+			status(&["5.4.1 Recipient address rejected: Access denied. AS(201806281)"]),
+			Some(MailboxStatus::Invalid)
+		);
+		// 5.4.1 without recipient wording is a routing problem.
+		assert_eq!(status(&["5.4.1 No answer from host"]), None);
+		assert_eq!(
+			status(&["5.2.1 Account disabled"]),
+			Some(MailboxStatus::Disabled)
+		);
+		assert_eq!(
+			status(&["4.2.2 Mailbox full"]),
+			Some(MailboxStatus::FullInbox)
+		);
+		// Temporary "user unknown" and policy codes are not mailbox verdicts.
+		assert_eq!(status(&["4.1.1 User unknown, try later"]), None);
+		assert_eq!(status(&["5.7.1 Access denied"]), None);
+		assert_eq!(status(&["5.1.1.1 Odd"]), None);
+		assert_eq!(status(&["User unknown"]), None);
+	}
+
+	#[test]
+	fn test_is_disabled_account() {
+		assert!(is_disabled_account(
+			"permanent: the email account that you tried to reach is disabled"
+		));
+		assert!(is_disabled_account("permanent: mailbox is inactive"));
+		assert!(!is_disabled_account("permanent: relaying disabled"));
+		assert!(!is_disabled_account("permanent: service inactive"));
 	}
 
 	#[test]

@@ -1,6 +1,7 @@
 use super::*;
 use crate::misc::MiscDetails;
 use crate::smtp::verif_method::{EverythingElseVerifMethod, VerifMethod, VerifMethodSmtpConfig};
+use crate::smtp::SmtpDebugVerifMethod;
 use crate::{calculate_reachable, CheckEmailInputBuilder, Reachable};
 use hickory_proto::rr::Name;
 use std::time::Duration;
@@ -31,9 +32,29 @@ async fn verify_with_behavior(
 	timeout: Duration,
 	accept_extra_recipients: bool,
 ) -> (Result<SmtpDetails, SmtpError>, SmtpDebug, Vec<String>) {
+	let retries = attempts.len();
+	verify_hosts(
+		domain,
+		&["127.0.0.1."],
+		attempts,
+		retries,
+		timeout,
+		accept_extra_recipients,
+	)
+	.await
+}
+
+/// `attempts` lists the scripted sessions of every host that connects, in order.
+async fn verify_hosts(
+	domain: &str,
+	hosts: &[&str],
+	attempts: Vec<Vec<Reply>>,
+	retries: usize,
+	timeout: Duration,
+	accept_extra_recipients: bool,
+) -> (Result<SmtpDetails, SmtpError>, SmtpDebug, Vec<String>) {
 	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let port = listener.local_addr().unwrap().port();
-	let retries = attempts.len();
 	// Every scripted probe must arrive over a separate connection, even within
 	// one attempt. This also detects accidental reuse after a catch-all refusal.
 	let sessions: Vec<_> = attempts
@@ -119,9 +140,13 @@ async fn verify_with_behavior(
 		})
 		.build()
 		.unwrap();
+	let hosts: Vec<_> = hosts
+		.iter()
+		.map(|host| Name::from_str(host).unwrap())
+		.collect();
 	let (result, debug) = crate::smtp::check_smtp(
 		&EmailAddress::from_str(&format!("target@{domain}")).unwrap(),
-		&Name::from_str("127.0.0.1.").unwrap(),
+		&hosts,
 		domain,
 		&input,
 	)
@@ -416,4 +441,128 @@ async fn target_full_inbox_stays_risky_and_disabled_stays_invalid() {
 		.await;
 		assert_eq!(reachable(&result), expected);
 	}
+}
+
+#[tokio::test]
+async fn microsoft_365_directory_rejection_is_not_an_ip_block() {
+	const DBEB: &str =
+		"550 5.4.1 Recipient address rejected: Access denied. AS(201806281) [x.prod.outlook.com]\r\n";
+	// The random catch-all address is rejected, so the domain isn't catch-all.
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![Reply::Text(DBEB), Reply::Text(ACCEPTED)]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Safe);
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![Reply::Text(DBEB), Reply::Text(DBEB)]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Invalid);
+}
+
+#[tokio::test]
+async fn mailbox_status_codes_decide_unless_our_ip_is_blamed() {
+	for (reply, expected) in [
+		// Broad blocklist wording no longer hides an explicit bad-mailbox code.
+		(
+			"550 5.1.1 <target@example.com>: mailbox blocked or unknown\r\n",
+			Reachable::Invalid,
+		),
+		// The code may start any line, not only the first.
+		("550-Rejected\r\n550 5.1.1 Nope\r\n", Reachable::Invalid),
+		(
+			"550 5.1.10 RESOLVER.ADR.RecipientNotFound; not found\r\n",
+			Reachable::Invalid,
+		),
+		(
+			"550 5.1.1 Rejected: sender IP listed on Spamhaus\r\n",
+			Reachable::Unknown,
+		),
+		// Server-level wording is not a disabled mailbox.
+		("550 Relaying disabled\r\n", Reachable::Unknown),
+		("550 5.2.1 Mailbox unavailable\r\n", Reachable::Invalid),
+	] {
+		let (result, _, _) = verify(
+			"example.com",
+			vec![vec![Reply::Text(MISSING), Reply::Text(reply)]],
+			Duration::from_secs(2),
+		)
+		.await;
+		assert_eq!(reachable(&result), expected, "{reply}");
+	}
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![
+			Reply::Text(MISSING),
+			Reply::Text("550 5.2.1 Account disabled\r\n"),
+		]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert!(result.unwrap().is_disabled);
+}
+
+#[tokio::test]
+async fn unreachable_primary_falls_back_to_next_mx() {
+	// Nothing listens on the first host (connection refused); the second answers.
+	let (result, debug, _) = verify_hosts(
+		"example.com",
+		&["127.0.0.2.", "127.0.0.1."],
+		vec![vec![Reply::Text(MISSING), Reply::Text(ACCEPTED)]],
+		1,
+		Duration::from_secs(5),
+		false,
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Safe);
+	match &debug.verif_method {
+		SmtpDebugVerifMethod::Smtp(smtp) => assert_eq!(smtp.host, "127.0.0.1."),
+		_ => panic!("Expected SMTP"),
+	}
+	let hosts: Vec<_> = debug
+		.probes
+		.iter()
+		.map(|probe| probe.mx_host.as_deref())
+		.collect();
+	assert_eq!(hosts[0], Some("127.0.0.2."));
+	assert!(debug.probes[0].error.is_some());
+	assert_eq!(hosts[hosts.len() - 1], Some("127.0.0.1."));
+}
+
+#[tokio::test]
+async fn temporary_greeting_refusal_falls_back_to_next_mx() {
+	let (result, _, _) = verify_hosts(
+		"example.com",
+		&["127.0.0.1.", "127.0.0.1."],
+		vec![vec![
+			Reply::RejectGreeting,
+			Reply::Text(MISSING),
+			Reply::Text(ACCEPTED),
+		]],
+		1,
+		Duration::from_secs(2),
+		false,
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Safe);
+}
+
+#[tokio::test]
+async fn host_that_answered_a_recipient_is_final() {
+	// A greylisting reply means the host is up, so the backup isn't contacted.
+	let (result, debug, _) = verify_hosts(
+		"example.com",
+		&["127.0.0.1.", "127.0.0.1."],
+		vec![vec![Reply::Text("451 4.7.1 Try again later\r\n")]],
+		1,
+		Duration::from_secs(2),
+		false,
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Unknown);
+	assert_eq!(debug.probes.len(), 1);
 }

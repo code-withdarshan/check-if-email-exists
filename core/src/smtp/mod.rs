@@ -26,7 +26,7 @@ mod yahoo;
 
 use crate::util::input_output::CheckEmailInput;
 use crate::EmailAddress;
-use connect::check_smtp_with_retry;
+use connect::{check_smtp_with_retry, is_host_unreachable};
 use hickory_proto::rr::Name;
 use serde::{Deserialize, Serialize};
 use std::default::Default;
@@ -98,6 +98,9 @@ pub struct SmtpProbe {
 	/// Connection number within this attempt; absent in older saved results.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub connection: Option<usize>,
+	/// MX host this probe was sent to; absent in older saved results.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub mx_host: Option<String>,
 	pub stage: SmtpProbeStage,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub response: Option<SmtpReply>,
@@ -118,15 +121,23 @@ pub struct SmtpDebug {
 	pub probes: Vec<SmtpProbe>,
 }
 
-/// Get all email details we can from one single `EmailAddress`, without
-/// retries.
+/// How many MX hosts, in preference order, one check may try.
+const MAX_MX_HOSTS: usize = 3;
+
+/// Get all email details we can from one single `EmailAddress`. `hosts` are
+/// the domain's MX hosts in preference order; the first one selects the
+/// verification method, and later ones are tried only if an earlier host
+/// could not be reached.
 pub async fn check_smtp(
 	to_email: &EmailAddress,
-	host: &Name,
+	hosts: &[Name],
 	domain: &str,
 	input: &CheckEmailInput,
 ) -> (Result<SmtpDetails, SmtpError>, SmtpDebug) {
-	let host_str = host.to_string();
+	let host_str = hosts
+		.first()
+		.expect("There should be at least one MX host. qed.")
+		.to_string();
 	let to_email_str = to_email.to_string();
 	let email_provider = EmailProvider::from_mx_host(&host_str);
 
@@ -211,16 +222,36 @@ pub async fn check_smtp(
 		}),
 		..Default::default()
 	};
-	let result = check_smtp_with_retry(
-		to_email,
-		&host_str,
-		domain,
-		&verif_method,
-		verif_method.config.retries,
-		&mut debug,
-	)
-	.await;
-	(result, debug)
+	let hosts = &hosts[..hosts.len().min(MAX_MX_HOSTS)];
+	for (index, host) in hosts.iter().enumerate() {
+		let host_str = host.to_string();
+		let first_probe = debug.probes.len();
+		let result = check_smtp_with_retry(
+			to_email,
+			&host_str,
+			domain,
+			&verif_method,
+			verif_method.config.retries,
+			&mut debug,
+		)
+		.await;
+		let host_probes = &mut debug.probes[first_probe..];
+		for probe in host_probes.iter_mut() {
+			probe.mx_host = Some(host_str.clone());
+		}
+		if let SmtpDebugVerifMethod::Smtp(smtp) = &mut debug.verif_method {
+			smtp.host = host_str;
+		}
+		// A host that replied to any RCPT has spoken for the domain.
+		let answered = host_probes.iter().any(|probe| probe.response.is_some());
+		match &result {
+			Err(error) if index + 1 < hosts.len() && !answered && is_host_unreachable(error) => {
+				continue
+			}
+			_ => return (result, debug),
+		}
+	}
+	unreachable!("The last host always returns. qed.")
 }
 
 #[cfg(test)]
@@ -254,7 +285,8 @@ mod tests {
 			.build()
 			.unwrap();
 
-		let (res, smtp_debug) = runtime.block_on(check_smtp(&to_email, &host, "gmail.com", &input));
+		let (res, smtp_debug) =
+			runtime.block_on(check_smtp(&to_email, &[host], "gmail.com", &input));
 		match smtp_debug.verif_method {
 			SmtpDebugVerifMethod::Smtp(SmtpDebugVerifMethodSmtp { host, verif_method }) => {
 				assert_eq!(host, "alt4.aspmx.l.google.com.");

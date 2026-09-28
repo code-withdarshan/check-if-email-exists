@@ -232,22 +232,26 @@ pub async fn check_email(input: &CheckEmailInput) -> CheckEmailOutput {
 		"Found misc details"
 	);
 
-	// From the list of MX records, we choose the one with the lowest priority.
-	let mx_records = my_mx
+	// MX hosts in preference order: the lowest preference number is tried
+	// first, the others only if it can't be reached.
+	let mut mx_records: Vec<_> = my_mx
 		.lookup
 		.as_ref()
 		.expect("If lookup is error, we already returned. qed.")
 		.iter()
-		.min_by_key(|a| a.preference())
-		.expect("There should be at least one MX record after filtering.");
-	let host = mx_records;
+		.collect();
+	mx_records.sort_by_key(|record| record.preference());
+	let hosts: Vec<_> = mx_records
+		.iter()
+		.map(|record| record.exchange().clone())
+		.collect();
 
 	let (my_smtp, smtp_debug) = check_smtp(
 		my_syntax
 			.address
 			.as_ref()
 			.expect("We already checked that the email has valid format. qed."),
-		host.exchange(),
+		&hosts,
 		my_syntax.domain.as_ref(),
 		input,
 	)

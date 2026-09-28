@@ -39,6 +39,9 @@ use crate::{EmailAddress, LOG_TARGET};
 trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
+/// Time allowed to open the TCP connection, within the overall SMTP timeout.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Try to send an smtp command, close and return Err if fails.
 macro_rules! try_smtp (
     ($res: expr, $client: ident, $to_email: expr, $host: expr, $port: expr) => ({
@@ -104,9 +107,15 @@ async fn connect_to_smtp_host(
 			BufStream::new(Box::new(socks_stream) as Box<dyn AsyncReadWrite>)
 		}
 		None => {
-			let tcp_stream =
-				TcpStream::connect(format!("{}:{}", clean_host, verif_method.config.smtp_port))
-					.await?;
+			// A dead host fails fast here, leaving time to try the next MX.
+			let tcp_stream = tokio::time::timeout(
+				CONNECT_TIMEOUT,
+				TcpStream::connect(format!("{}:{}", clean_host, verif_method.config.smtp_port)),
+			)
+			.await
+			.map_err(|_| {
+				std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timed out")
+			})??;
 			BufStream::new(Box::new(tcp_stream) as Box<dyn AsyncReadWrite>)
 		}
 	};
@@ -160,6 +169,7 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 	debug.probes.push(SmtpProbe {
 		attempt,
 		connection: Some(connection),
+		mx_host: None,
 		stage,
 		response: None,
 		error: None,
@@ -201,6 +211,13 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 			let err_string = err.to_string().to_lowercase();
 			let permanent = matches!(&err, AsyncSmtpError::Permanent(_));
 			let error = SmtpError::AsyncSmtpError(err);
+			// A mailbox status code outranks broad wording such as "blocked" or
+			// "access denied", unless the reply blames our IP's reputation.
+			let coded = probe
+				.response
+				.as_ref()
+				.and_then(|response| parser::mailbox_status(&response.messages))
+				.filter(|_| !parser::mentions_ip_reputation(&err_string));
 			// A policy refusal concerns this probe/sender, not mailbox existence.
 			// Gmail is an exception: it can state a missing mailbox with 5.7.1.
 			let policy_refusal = !err_string.contains("email doesn't exist")
@@ -211,13 +228,17 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 							.is_some_and(|code| code.starts_with("5.7."))
 					})
 				});
-			if policy_refusal || error.get_description().is_some() {
+			if coded.is_none() && (policy_refusal || error.get_description().is_some()) {
 				return Err(error);
 			}
 			if probe.stage == SmtpProbeStage::CatchAll {
 				// Only an explicit permanent recipient rejection establishes no catch-all.
 				// Full/disabled/random recipients and temporary failures are inconclusive.
-				return if permanent && parser::is_invalid(&err_string, to_email) {
+				let invalid = match coded {
+					Some(status) => status == parser::MailboxStatus::Invalid,
+					None => parser::is_invalid(&err_string, to_email),
+				};
+				return if permanent && invalid {
 					Ok(Deliverability {
 						has_full_inbox: false,
 						is_deliverable: false,
@@ -226,6 +247,32 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 				} else {
 					Err(error)
 				};
+			}
+
+			match coded {
+				Some(parser::MailboxStatus::Invalid) => {
+					return Ok(Deliverability {
+						has_full_inbox: false,
+						is_deliverable: false,
+						is_disabled: false,
+					})
+				}
+				Some(parser::MailboxStatus::Disabled) => {
+					return Ok(Deliverability {
+						has_full_inbox: false,
+						is_deliverable: false,
+						is_disabled: true,
+					})
+				}
+				Some(parser::MailboxStatus::FullInbox) => {
+					return Ok(Deliverability {
+						has_full_inbox: true,
+						is_deliverable: false,
+						is_disabled: false,
+					})
+				}
+				// No mailbox status code: fall back to the reply's wording.
+				None => {}
 			}
 
 			// Check if the email account has been disabled or blocked.
@@ -317,6 +364,7 @@ async fn connect_for_recipient(
 	debug.probes.push(SmtpProbe {
 		attempt,
 		connection: Some(connection),
+		mx_host: None,
 		stage: SmtpProbeStage::Recipient,
 		response: None,
 		error: None,
@@ -338,7 +386,22 @@ async fn create_smtp_future(
 ) -> Result<(bool, Deliverability), SmtpError> {
 	// FIXME If the SMTP is not connectable, we should actually return an
 	// Ok(SmtpDetails { can_connect_smtp: false, ... }).
+	// Record the stage that was due, so a failed handshake keeps its evidence.
+	debug.probes.push(SmtpProbe {
+		attempt,
+		connection: Some(1),
+		mx_host: None,
+		stage: if has_rule(domain, mx_host, &Rule::SkipCatchAll) {
+			SmtpProbeStage::Recipient
+		} else {
+			SmtpProbeStage::CatchAll
+		},
+		response: None,
+		error: None,
+	});
 	let mut smtp_transport = connect_to_smtp_host(to_email, mx_host, verif_method).await?;
+	// The RCPT check adds the actual reply record after a successful handshake.
+	debug.probes.pop();
 
 	let is_catch_all = smtp_is_catch_all(
 		&mut smtp_transport,
@@ -457,6 +520,21 @@ async fn check_smtp_without_retry(
 		is_deliverable: deliverability.is_deliverable,
 		is_disabled: deliverability.is_disabled,
 	})
+}
+
+/// Whether the host failed before any conversation that could concern the
+/// mailbox, so a backup MX may still answer: refused/unreachable/reset
+/// connections and temporary refusals. Timeouts are excluded because trying
+/// another host would add a full SMTP timeout each, and refusals naming our IP
+/// would be repeated by the other hosts.
+pub fn is_host_unreachable(error: &SmtpError) -> bool {
+	match error {
+		SmtpError::IOError(_) => true,
+		SmtpError::AsyncSmtpError(AsyncSmtpError::Io(_) | AsyncSmtpError::Transient(_)) => {
+			error.get_description().is_none()
+		}
+		_ => false,
+	}
 }
 
 /// Get all email details we can from one single `EmailAddress`.
