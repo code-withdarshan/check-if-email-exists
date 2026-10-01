@@ -88,7 +88,7 @@ pub mod syntax;
 mod util;
 
 use misc::{check_misc, MiscDetails};
-use mx::check_mx;
+use mx::{check_mx, is_unusable_mx};
 use rustls::crypto::ring;
 use smtp::{check_smtp, SmtpDetails, SmtpError};
 pub use smtp::{is_gmail, is_hotmail, is_hotmail_b2b, is_hotmail_b2c, is_yahoo};
@@ -241,8 +241,10 @@ pub async fn check_email(input: &CheckEmailInput) -> CheckEmailOutput {
 		.iter()
 		.collect();
 	mx_records.sort_by_key(|record| record.preference());
+	// A null MX or localhost among real hosts is skipped, never connected to.
 	let hosts: Vec<_> = mx_records
 		.iter()
+		.filter(|record| !is_unusable_mx(record.exchange()))
 		.map(|record| record.exchange().clone())
 		.collect();
 

@@ -16,6 +16,7 @@
 
 use crate::syntax::SyntaxDetails;
 use crate::util::ser_with_display::ser_with_display;
+use hickory_proto::rr::Name;
 use hickory_resolver::error::{ResolveError, ResolveErrorKind};
 use hickory_resolver::lookup::MxLookup;
 use hickory_resolver::system_conf::read_system_conf;
@@ -94,6 +95,17 @@ impl From<ResolveError> for MxError {
 	}
 }
 
+/// An MX host that can't receive mail: the null MX "." (RFC 7505: the domain
+/// accepts no email, common on parked and typo domains), or "localhost", which
+/// would point the check at our own server.
+pub fn is_unusable_mx(host: &Name) -> bool {
+	host.is_root()
+		|| host
+			.to_ascii()
+			.trim_end_matches('.')
+			.eq_ignore_ascii_case("localhost")
+}
+
 /// Make a MX lookup.
 pub async fn check_mx(syntax: &SyntaxDetails) -> Result<MxDetails, MxError> {
 	// Construct a new Resolver with default configuration options
@@ -101,6 +113,10 @@ pub async fn check_mx(syntax: &SyntaxDetails) -> Result<MxDetails, MxError> {
 	let resolver = TokioAsyncResolver::tokio(config, opts);
 
 	match resolver.mx_lookup(&syntax.domain).await {
+		// Only unusable hosts: the domain accepts no email, like having no MX at all.
+		Ok(lookup) if lookup.iter().all(|mx| is_unusable_mx(mx.exchange())) => Ok(MxDetails {
+			lookup: Err(ResolveError::from("Null MX: the domain accepts no email")),
+		}),
 		Ok(lookup) => Ok(MxDetails::from(lookup)),
 		Err(err) => match err.kind() {
 			// Prefer to return an empty MX lookup if there are no records.
@@ -162,4 +178,21 @@ pub fn is_proofpoint(mx_host: &str) -> bool {
 /// - mx-eu.mail.am0.yahoodns.net.
 pub fn is_yahoo(mx_host: &str) -> bool {
 	mx_host.to_lowercase().ends_with(".yahoodns.net.")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::is_unusable_mx;
+	use hickory_proto::rr::Name;
+	use std::str::FromStr;
+
+	#[test]
+	fn null_mx_and_localhost_are_unusable() {
+		for host in [".", "localhost.", "LOCALHOST"] {
+			assert!(is_unusable_mx(&Name::from_str(host).unwrap()), "{}", host);
+		}
+		for host in ["mx.example.com.", "localhost.example.com.", "mail.localhost-mail.com."] {
+			assert!(!is_unusable_mx(&Name::from_str(host).unwrap()), "{}", host);
+		}
+	}
 }

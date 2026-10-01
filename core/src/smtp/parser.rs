@@ -190,6 +190,26 @@ pub fn says_no_such_mailbox(e: &str) -> bool {
 		.any(|words| e.contains(words))
 }
 
+/// The reply is about our sender (`FROM_EMAIL`), not the recipient. Postfix checks
+/// the sender when the recipient is given, so these arrive as the RCPT reply, often
+/// with recipient-like wording:
+/// - 550 5.1.0 <check@example.com>: Sender address rejected: User unknown in virtual mailbox table
+/// - 450 4.1.8 <check@example.com>: Sender address rejected: Domain not found
+/// - 550 Sender verify failed
+/// - 550 5.7.1 Sender is not allowed to send to this recipient
+pub fn blames_sender(e: &str) -> bool {
+	[
+		"sender address",
+		"sender verif",
+		"sender domain",
+		"sender rejected",
+		"unverified sender",
+		"sender is not",
+	]
+	.iter()
+	.any(|words| e.contains(words))
+}
+
 /// Postfix's recipient verification (`reject_unverified_recipient`) refuses an
 /// address its backend rejected with a 450 by default, e.g. Namecheap Private Email:
 /// "450 4.1.1 <x>: Recipient address rejected: unverified address: Mailbox might be
@@ -305,6 +325,17 @@ pub fn is_err_ip_blacklisted(e: &SmtpError) -> bool {
 	|| e.contains("relay not permitted")
 	// 23.129.64.216 is not yet authorized to deliver mail from
 	|| e.contains("not yet authorized")
+}
+
+/// Check if the server refused our sender address, unless it blames our IP.
+pub fn is_err_sender_rejected(e: &SmtpError) -> bool {
+	match e {
+		SmtpError::AsyncSmtpError(AsyncSmtpError::Transient(r) | AsyncSmtpError::Permanent(r)) => {
+			let e = r.message.join("; ").to_lowercase();
+			blames_sender(&e) && !mentions_ip_reputation(&e)
+		}
+		_ => false,
+	}
 }
 
 /// Check if the IP needs a reverse DNS.

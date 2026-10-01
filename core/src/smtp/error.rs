@@ -120,7 +120,11 @@ impl SmtpError {
 	pub fn get_description(&self) -> Option<SmtpErrorDesc> {
 		match self {
 			SmtpError::AsyncSmtpError(_) => {
-				if parser::is_err_ip_blacklisted(self) {
+				// Before the IP check: "Sender address rejected: Access denied"
+				// is about our FROM_EMAIL, not our IP.
+				if parser::is_err_sender_rejected(self) {
+					Some(SmtpErrorDesc::SenderRejected)
+				} else if parser::is_err_ip_blacklisted(self) {
 					Some(SmtpErrorDesc::IpBlacklisted)
 				} else if parser::is_err_needs_rdns(self) {
 					Some(SmtpErrorDesc::NeedsRDNS)
@@ -141,4 +145,7 @@ pub enum SmtpErrorDesc {
 	IpBlacklisted,
 	/// The IP needs a reverse DNS entry.
 	NeedsRDNS,
+	/// The server refused our sender address (`FROM_EMAIL`), so it said nothing
+	/// about the recipient.
+	SenderRejected,
 }

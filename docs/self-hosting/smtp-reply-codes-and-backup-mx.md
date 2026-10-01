@@ -18,6 +18,15 @@ recipient replies are read and which mail server is asked:
 - **Stricter "disabled" wording.** Without a status code, "disabled", "discontinued"
   or "inactive" must refer to an account, mailbox, user or recipient.
   `550 Relaying disabled` is no longer a disabled mailbox.
+- **Replies about our sender.** Postfix checks the sender when the recipient is
+  given, so a refusal of `RCH__FROM_EMAIL` arrives as the RCPT reply, often with
+  recipient-like words: `550 5.1.0 <check@…>: Sender address rejected: User unknown`.
+  Such replies ("sender address", "sender verify", "sender domain"…) now stay
+  `unknown` with `description: "SenderRejected"`, instead of `invalid`. If they're
+  common, `RCH__FROM_EMAIL` isn't a real, deliverable mailbox.
+- **Null MX.** A domain whose only MX is `.` (RFC 7505) or `localhost` accepts no
+  email: `invalid` with `accepts_mail: false`, and no connection is made. A null MX
+  among real hosts is skipped.
 - **Backup MX hosts.** Hosts are tried in MX preference order, up to three. The next
   host is tried only when the current one refused or reset the connection, or gave
   a temporary refusal before answering any recipient probe. Replies that name the

@@ -210,6 +210,11 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 			let err_string = err.to_string().to_lowercase();
 			let permanent = matches!(&err, AsyncSmtpError::Permanent(_));
 			let error = SmtpError::AsyncSmtpError(err);
+			// A reply about our sender says nothing about the recipient, even with a
+			// mailbox-like code or wording ("Sender address rejected: User unknown").
+			if parser::blames_sender(&err_string) {
+				return Err(error);
+			}
 			// A mailbox status code outranks broad wording such as "blocked" or
 			// "access denied", unless the reply blames our IP's reputation.
 			let coded = probe

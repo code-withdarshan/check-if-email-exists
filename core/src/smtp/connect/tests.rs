@@ -1,5 +1,6 @@
 use super::*;
 use crate::misc::MiscDetails;
+use crate::smtp::error::SmtpErrorDesc;
 use crate::smtp::verif_method::{EverythingElseVerifMethod, VerifMethod, VerifMethodSmtpConfig};
 use crate::smtp::SmtpDebugVerifMethod;
 use crate::{calculate_reachable, CheckEmailInputBuilder, Reachable};
@@ -512,6 +513,48 @@ async fn privacy_and_small_provider_missing_mailbox_replies_are_invalid() {
 		.await;
 		assert_eq!(reachable(&result), Reachable::Invalid, "{reply}");
 	}
+}
+
+#[tokio::test]
+async fn replies_about_our_sender_are_never_a_recipient_verdict() {
+	for reply in [
+		// Recipient-like wording and codes, but about our FROM_EMAIL.
+		"550 5.1.0 <check@example.org>: Sender address rejected: User unknown in virtual mailbox table\r\n",
+		"550 5.1.1 <check@example.org>: Sender address rejected: Address does not exist\r\n",
+		"550 Sender verify failed\r\n",
+		"550 5.7.1 Sender is not allowed to send to this recipient\r\n",
+	] {
+		// On the catch-all probe: inconclusive, and the target is never asked.
+		let (result, _, commands) =
+			verify("example.com", vec![vec![Reply::Text(reply)]], Duration::from_secs(2)).await;
+		assert_eq!(reachable(&result), Reachable::Unknown, "{reply}");
+		assert!(!commands.iter().any(|c| c.contains("target@example.com")));
+		// On the target: unknown, not invalid.
+		let (result, _, _) = verify(
+			"example.com",
+			vec![vec![Reply::Text(MISSING), Reply::Text(reply)]],
+			Duration::from_secs(2),
+		)
+		.await;
+		assert_eq!(reachable(&result), Reachable::Unknown, "{reply}");
+		assert!(matches!(
+			result.unwrap_err().get_description(),
+			Some(SmtpErrorDesc::SenderRejected)
+		));
+	}
+	// A recipient rejection that only mentions the sender's IP stays an IP problem.
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![Reply::Text(
+			"554 5.7.1 Sender address rejected: Client host blocked using Spamhaus\r\n",
+		)]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert!(matches!(
+		result.unwrap_err().get_description(),
+		Some(SmtpErrorDesc::IpBlacklisted)
+	));
 }
 
 #[tokio::test]
