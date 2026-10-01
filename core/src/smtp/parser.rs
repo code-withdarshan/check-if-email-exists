@@ -190,6 +190,15 @@ pub fn says_no_such_mailbox(e: &str) -> bool {
 		.any(|words| e.contains(words))
 }
 
+/// Postfix's recipient verification (`reject_unverified_recipient`) refuses an
+/// address its backend rejected with a 450 by default, e.g. Namecheap Private Email:
+/// "450 4.1.1 <x>: Recipient address rejected: unverified address: Mailbox might be
+/// disabled, full, or may not exist on the server". The address can't receive mail.
+/// "Address verification in progress" is a real "try again later".
+pub fn is_unverified_recipient(e: &str) -> bool {
+	e.contains("unverified address") && !e.contains("in progress")
+}
+
 /// Check that the mailbox has a full inbox.
 pub fn is_full_inbox(e: &str) -> bool {
 	e.contains("insufficient")

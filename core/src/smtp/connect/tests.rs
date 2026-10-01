@@ -463,6 +463,70 @@ async fn hosting_provider_missing_mailbox_replies_are_invalid() {
 }
 
 #[tokio::test]
+async fn namecheap_unverified_recipient_is_invalid_and_not_catch_all() {
+	// Namecheap Private Email (Postfix reject_unverified_recipient), seen from
+	// mx1.privateemail.com: a temporary code, but the mailbox check failed.
+	const UNVERIFIED: &str = "450 4.1.1 <x@example.com>: Recipient address rejected: unverified address: Mailbox might be disabled, full, or may not exist on the server. Reason: JFE030050\r\n";
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![Reply::Text(UNVERIFIED), Reply::Text("250 2.1.5 Ok\r\n")]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Safe);
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![Reply::Text(UNVERIFIED), Reply::Text(UNVERIFIED)]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Invalid);
+	// Verification still running is a real "try again later".
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![Reply::Text(
+			"450 4.1.1 <x@example.com>: Recipient address rejected: unverified address: Address verification in progress\r\n",
+		)]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Unknown);
+}
+
+#[tokio::test]
+async fn privacy_and_small_provider_missing_mailbox_replies_are_invalid() {
+	for reply in [
+		// Proton (seen from mail.protonmail.ch)
+		"550 5.1.1 <target@example.com>: Recipient address rejected: Address does not exist\r\n",
+		// Fastmail, Rackspace, Migadu, Purelymail (Postfix)
+		"550 5.1.1 <target@example.com>: Recipient address rejected: User unknown in local recipient table\r\n",
+		"550 5.1.1 <target@example.com>: Recipient address rejected: User unknown in relay recipient table\r\n",
+		// GMX, mail.com, web.de
+		"550 Requested action not taken: mailbox unavailable\r\n",
+	] {
+		let (result, _, _) = verify(
+			"example.com",
+			vec![vec![Reply::Text(MISSING), Reply::Text(reply)]],
+			Duration::from_secs(2),
+		)
+		.await;
+		assert_eq!(reachable(&result), Reachable::Invalid, "{reply}");
+	}
+}
+
+#[tokio::test]
+async fn catch_all_probe_address_is_stable_per_domain() {
+	// Greylisting lets a sender/recipient pair through only when it is retried.
+	let first = catch_all_local_part("Example.com");
+	assert_eq!(first, catch_all_local_part("example.com"));
+	assert_eq!(first.len(), 15);
+	assert!(first.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+	assert_ne!(first, catch_all_local_part("example.org"));
+	let (_, _, commands) = verify("example.com", vec![vec![Reply::Text(ACCEPTED)]], Duration::from_secs(2)).await;
+	assert!(commands.contains(&format!("RCPT TO:<{first}@example.com>")));
+}
+
+#[tokio::test]
 async fn server_hanging_up_after_rejection_keeps_invalid_result() {
 	let (result, _, commands) = verify(
 		"example.com",

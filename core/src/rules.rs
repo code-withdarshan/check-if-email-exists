@@ -112,15 +112,17 @@ mod tests {
 	}
 
 	#[test]
-	fn yahoo_hosted_domains_skip_catch_all() {
-		for domain in ["aol.com", "aim.com", "ymail.com", "yahoo.co.in"] {
-			assert!(has_rule(
+	fn yahoo_hosted_domains_keep_the_catch_all_check() {
+		// Yahoo (also aol.com, aim.com, ymail.com) answers "250 recipient ok" for any
+		// address and rejects unknown ones only after DATA. The catch-all probe is what
+		// stops its addresses from all looking safe.
+		for domain in ["yahoo.com", "yahoo.fr", "aol.com", "aim.com", "ymail.com"] {
+			assert!(!has_rule(
 				domain,
 				"mx-aol.mail.gm0.yahoodns.net.",
 				&Rule::SkipCatchAll
 			));
 		}
-		assert!(!has_rule("example.com", "mx.example.com.", &Rule::SkipCatchAll));
 	}
 
 	#[test]

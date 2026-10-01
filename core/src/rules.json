@@ -3,9 +3,7 @@
 		"gmail.com": { "rules": ["SkipCatchAll"] },
 		"hotmail.com": { "rules": ["SkipCatchAll"] },
 		"hotmail.fr": { "rules": ["SkipCatchAll"] },
-		"hotmail.nl": { "rules": ["SkipCatchAll"] },
-		"yahoo.com": { "rules": ["SkipCatchAll"] },
-		"yahoo.fr": { "rules": ["SkipCatchAll"] }
+		"hotmail.nl": { "rules": ["SkipCatchAll"] }
 	},
 	"by_mx": {
 		"futuresinitiative.org.": { "rules": ["SmtpTimeout45s"] },
@@ -17,10 +15,6 @@
 		".olc.protection.outlook.com.": {
 			"rules": ["SkipCatchAll"],
 			"_comment": "Outlook consumer servers can reject a second RCPT TO in the same transaction with 4.5.3 ATTR38. Probe only the requested mailbox."
-		},
-		".yahoodns.net.": {
-			"rules": ["SkipCatchAll"],
-			"_comment": "Yahoo's servers, which also host aol.com, aim.com, ymail.com and rocketmail.com, are never catch-all. Probe only the requested mailbox."
 		},
 		".antispamcloud.com.": {
 			"rules": ["SmtpTimeout45s", "SkipCatchAll"],

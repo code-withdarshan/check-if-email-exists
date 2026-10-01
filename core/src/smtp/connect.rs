@@ -21,9 +21,8 @@ use async_smtp::extension::ClientId;
 use async_smtp::{SmtpClient, SmtpTransport};
 use fast_socks5::client::Config;
 use fast_socks5::{client::Socks5Stream, Result};
-use rand::rngs::SmallRng;
-use rand::{distributions::Alphanumeric, Rng, SeedableRng};
-use std::iter;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, BufStream};
@@ -238,7 +237,8 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 					Some(status) => status == parser::MailboxStatus::Invalid,
 					None => parser::is_invalid(&err_string, to_email),
 				};
-				return if permanent && invalid {
+				let unverified = parser::is_unverified_recipient(&err_string);
+				return if (permanent && invalid) || unverified {
 					Ok(Deliverability {
 						has_full_inbox: false,
 						is_deliverable: false,
@@ -293,6 +293,15 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 				});
 			}
 
+			// A temporary code, but the server's own check of this mailbox failed.
+			if parser::is_unverified_recipient(&err_string) {
+				return Ok(Deliverability {
+					has_full_inbox: false,
+					is_deliverable: false,
+					is_disabled: false,
+				});
+			}
+
 			if !permanent {
 				return Err(error);
 			}
@@ -310,6 +319,30 @@ async fn check_email_deliverability<S: AsyncBufRead + AsyncWrite + Unpin + Send>
 			Err(error)
 		}
 	}
+}
+
+/// The made-up 15-character mailbox used for the catch-all probe. It is the same
+/// for a domain every time: greylisting servers turn away a new sender/recipient
+/// pair until it is retried, so a fresh random address would never get through.
+fn catch_all_local_part(domain: &str) -> String {
+	const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+	let mut local = String::with_capacity(15);
+	let mut round = 0u64;
+	while local.len() < 15 {
+		let mut hasher = DefaultHasher::new();
+		("reacher-catch-all", domain.to_lowercase(), round).hash(&mut hasher);
+		let mut n = hasher.finish();
+		// Eight base-36 characters per 64-bit hash.
+		for _ in 0..8 {
+			if local.len() == 15 {
+				break;
+			}
+			local.push(CHARS[(n % 36) as usize] as char);
+			n /= 36;
+		}
+		round += 1;
+	}
+	local
 }
 
 /// Checks if the domain has a catch-all email setup.
@@ -332,13 +365,7 @@ async fn smtp_is_catch_all<S: AsyncBufRead + AsyncWrite + Unpin + Send>(
 		return Ok(false);
 	}
 
-	// Create a random 15-char alphanumerical string.
-	let mut rng = SmallRng::from_entropy();
-	let random_email: String = iter::repeat_with(|| rng.sample(Alphanumeric))
-		.map(char::from)
-		.take(15)
-		.collect();
-	let random_email = EmailAddress::new(format!("{}@{}", random_email, domain))?;
+	let random_email = EmailAddress::new(format!("{}@{}", catch_all_local_part(domain), domain))?;
 
 	check_email_deliverability(
 		smtp_transport,
