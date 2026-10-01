@@ -405,6 +405,64 @@ async fn gmail_missing_mailbox_with_policy_code_is_invalid() {
 }
 
 #[tokio::test]
+async fn yandex_no_such_user_with_policy_code_is_invalid() {
+	// Yandex answers a missing mailbox, including the random catch-all address,
+	// with "550 5.7.1 No such user!" (seen from mx.yandex.ru).
+	const YANDEX: &str = "550 5.7.1 No such user! 1790845545-j5gZKX5Xx4Y0-wDeZAbsp\r\n";
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![
+			Reply::Text(YANDEX),
+			Reply::Text("250 2.1.5 <target@example.com> recipient ok\r\n"),
+		]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Safe);
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![Reply::Text(YANDEX), Reply::Text(YANDEX)]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Invalid);
+	// The same code blaming our IP is still not a mailbox verdict.
+	let (result, _, _) = verify(
+		"example.com",
+		vec![vec![Reply::Text(
+			"550 5.7.1 No such user or your IP is on a blocklist\r\n",
+		)]],
+		Duration::from_secs(2),
+	)
+	.await;
+	assert_eq!(reachable(&result), Reachable::Unknown);
+}
+
+#[tokio::test]
+async fn hosting_provider_missing_mailbox_replies_are_invalid() {
+	for reply in [
+		// AOL and Yahoo
+		"554 delivery error: dd This user doesn't have a aol.com account (target@example.com) [0] - mta1234.mail.gq1.yahoo.com\r\n",
+		// Zoho (seen from smtpin.zoho.com)
+		"550 5.1.1 User does not exist - <target@example.com>\r\n",
+		// IONOS
+		"550 Requested action not taken: mailbox unavailable\r\n",
+		// GoDaddy (secureserver.net)
+		"550 5.1.1 <target@example.com> Recipient not found. <http://x.co/irbounce>\r\n",
+		// OVHcloud MX Plan and Hostinger (Postfix)
+		"550 5.1.1 <target@example.com>: Recipient address rejected: User unknown in virtual mailbox table\r\n",
+	] {
+		let (result, _, _) = verify(
+			"example.com",
+			vec![vec![Reply::Text(MISSING), Reply::Text(reply)]],
+			Duration::from_secs(2),
+		)
+		.await;
+		assert_eq!(reachable(&result), Reachable::Invalid, "{reply}");
+	}
+}
+
+#[tokio::test]
 async fn server_hanging_up_after_rejection_keeps_invalid_result() {
 	let (result, _, commands) = verify(
 		"example.com",

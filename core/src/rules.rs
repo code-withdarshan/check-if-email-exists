@@ -112,6 +112,18 @@ mod tests {
 	}
 
 	#[test]
+	fn yahoo_hosted_domains_skip_catch_all() {
+		for domain in ["aol.com", "aim.com", "ymail.com", "yahoo.co.in"] {
+			assert!(has_rule(
+				domain,
+				"mx-aol.mail.gm0.yahoodns.net.",
+				&Rule::SkipCatchAll
+			));
+		}
+		assert!(!has_rule("example.com", "mx.example.com.", &Rule::SkipCatchAll));
+	}
+
+	#[test]
 	fn should_skip_catch_all() {
 		assert!(has_rule(
 			"gmail.com",

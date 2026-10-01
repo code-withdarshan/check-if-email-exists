@@ -80,6 +80,8 @@ pub fn is_invalid(e: &str, email: &EmailAddress) -> bool {
 	|| e.contains("no such recipient")
 	// 554 delivery error: This user doesn’t have an account
 	|| e.contains("have an account")
+	// 554 delivery error: dd This user doesn't have a aol.com account (on @aol.com, @yahoo.com)
+	|| (e.contains("doesn't have a") && e.contains("account"))
 	// permanent: Unknown local part <USER> in <USER@flabeg.com> (on @flabeg.com)
 	|| e.contains("unknown local part")
 	// 5.1.1 RCP-P1 Domain facebook.com no longer available https://www.facebook.com/postmaster/response_codes?ip=3.80.111.155#RCP-P1
@@ -169,6 +171,23 @@ pub fn mentions_ip_reputation(e: &str) -> bool {
 	]
 	.iter()
 	.any(|word| e.contains(word))
+}
+
+/// Wording that only ever means the mailbox doesn't exist. Some providers send it
+/// under a 5.7.x policy code: Gmail "5.7.1 Email doesn't exist", Yandex
+/// "5.7.1 No such user!". A reply that also blames our IP doesn't count.
+pub fn says_no_such_mailbox(e: &str) -> bool {
+	!mentions_ip_reputation(e)
+		&& [
+			"email doesn't exist",
+			"no such user",
+			"user unknown",
+			"unknown user",
+			"user does not exist",
+			"no such mailbox",
+		]
+		.iter()
+		.any(|words| e.contains(words))
 }
 
 /// Check that the mailbox has a full inbox.
