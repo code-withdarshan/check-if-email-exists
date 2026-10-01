@@ -23,6 +23,7 @@ use fast_socks5::client::Config;
 use fast_socks5::{client::Socks5Stream, Result};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, BufStream};
@@ -40,6 +41,30 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
 /// Time allowed to open the TCP connection, within the overall SMTP timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The addresses of a mail server in the order to try them: IPv4 first.
+/// Large providers hold IPv6 senders to stricter rules (reverse DNS, SPF),
+/// and a server's IPv6 address often has no reverse DNS, so IPv6 is a fallback.
+fn ipv4_first(mut addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+	addrs.sort_by_key(SocketAddr::is_ipv6);
+	addrs
+}
+
+/// Opens a TCP connection to a mail server, trying each of its addresses.
+pub(crate) async fn connect_tcp(host: &str, port: u16) -> std::io::Result<TcpStream> {
+	let addrs = ipv4_first(tokio::net::lookup_host((host, port)).await?.collect());
+	let mut last_error = std::io::Error::new(
+		std::io::ErrorKind::NotFound,
+		format!("{host} has no IP address"),
+	);
+	for addr in addrs {
+		match TcpStream::connect(addr).await {
+			Ok(stream) => return Ok(stream),
+			Err(err) => last_error = err,
+		}
+	}
+	Err(last_error)
+}
 
 /// Try to send an smtp command, close and return Err if fails.
 macro_rules! try_smtp (
@@ -109,7 +134,7 @@ async fn connect_to_smtp_host(
 			// A dead host fails fast here, leaving time to try the next MX.
 			let tcp_stream = tokio::time::timeout(
 				CONNECT_TIMEOUT,
-				TcpStream::connect(format!("{}:{}", clean_host, verif_method.config.smtp_port)),
+				connect_tcp(&clean_host, verif_method.config.smtp_port),
 			)
 			.await
 			.map_err(|_| {

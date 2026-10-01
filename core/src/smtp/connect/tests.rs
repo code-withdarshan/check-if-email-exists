@@ -731,3 +731,16 @@ async fn host_that_answered_a_recipient_is_final() {
 	assert_eq!(reachable(&result), Reachable::Unknown);
 	assert_eq!(debug.probes.len(), 1);
 }
+
+#[test]
+fn mail_servers_are_tried_over_ipv4_first() {
+	let addrs: Vec<std::net::SocketAddr> = ["[2001:db8::1]:25", "192.0.2.1:25", "[2001:db8::2]:25", "192.0.2.2:25"]
+		.iter()
+		.map(|a| a.parse().unwrap())
+		.collect();
+	let ordered: Vec<String> = ipv4_first(addrs).iter().map(|a| a.to_string()).collect();
+	assert_eq!(
+		ordered,
+		["192.0.2.1:25", "192.0.2.2:25", "[2001:db8::1]:25", "[2001:db8::2]:25"]
+	);
+}

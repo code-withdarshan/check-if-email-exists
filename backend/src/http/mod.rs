@@ -31,6 +31,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::info;
 pub use v0::check_email::post::CheckEmailRequest;
+pub use v1::self_check::run_self_check_periodically;
 use warp::Filter;
 
 pub fn create_routes(
@@ -60,6 +61,7 @@ pub fn create_routes(
 			Arc::clone(&config),
 		))
 		.or(v1::usage::v1_get_usage(Arc::clone(&config)))
+		.or(v1::self_check::v1_get_self_check(Arc::clone(&config)))
 		.or(v1::bulk::get_results::v1_get_bulk_job_results(config))
 		.recover(handle_rejection)
 }

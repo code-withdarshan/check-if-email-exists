@@ -27,6 +27,7 @@ mod yahoo;
 use crate::util::input_output::CheckEmailInput;
 use crate::EmailAddress;
 use connect::{check_smtp_with_retry, is_host_unreachable};
+pub(crate) use connect::connect_tcp;
 use hickory_proto::rr::Name;
 use serde::{Deserialize, Serialize};
 use std::default::Default;

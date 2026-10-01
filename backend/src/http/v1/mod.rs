@@ -16,4 +16,5 @@
 
 pub mod bulk;
 pub mod check_email;
+pub mod self_check;
 pub mod usage;

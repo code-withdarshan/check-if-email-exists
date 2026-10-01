@@ -19,7 +19,7 @@
 
 use check_if_email_exists::{setup_sentry, LOG_TARGET};
 use reacher_backend::config::load_config;
-use reacher_backend::http::run_warp_server;
+use reacher_backend::http::{run_self_check_periodically, run_warp_server};
 use reacher_backend::worker::run_worker;
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -46,6 +46,9 @@ async fn main() -> Result<(), anyhow::Error> {
 	}
 
 	let config = Arc::new(config);
+
+	// Reports sending-setup problems (reverse DNS, blocklists, port 25) in the log.
+	tokio::spawn(run_self_check_periodically(Arc::clone(&config)));
 
 	let server_future = run_warp_server(Arc::clone(&config));
 	let worker_future = async {
