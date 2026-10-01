@@ -47,3 +47,12 @@ journalctl -u verifier-engine -n 50 | grep Self-check
 ```
 
 Fix anything reported as `fail` first; `warn` items cost some providers' answers.
+
+## Catch-all domain cache
+
+A domain whose server accepted the made-up catch-all address is remembered for
+24 hours. Further checks on it return `risky` (catch-all) at once, without an
+SMTP conversation, and carry `debug.smtp.catch_all_cached: true`. Lists with
+many addresses at one catch-all domain finish faster, and that domain's server
+sees one connection instead of hundreds. The cache lives in the engine's memory
+(up to 100,000 domains) and is emptied by a restart.

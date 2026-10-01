@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub(crate) mod catch_all_cache;
 mod connect;
 mod error;
 mod gmail;
@@ -117,6 +118,10 @@ pub struct SmtpDebug {
 	/// Whether provider rules intentionally omitted the catch-all probe.
 	#[serde(default)]
 	pub catch_all_skipped: bool,
+	/// The domain was found to be catch-all in the last day, so no SMTP
+	/// conversation took place for this address.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub catch_all_cached: bool,
 	/// Replies from every recipient probe, including failed attempts.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub probes: Vec<SmtpProbe>,
@@ -223,6 +228,11 @@ pub async fn check_smtp(
 		}),
 		..Default::default()
 	};
+	let use_cache = catch_all_cache::enabled();
+	if use_cache && catch_all_cache::is_known_catch_all(domain) {
+		debug.catch_all_cached = true;
+		return (Ok(catch_all_details()), debug);
+	}
 	let hosts = &hosts[..hosts.len().min(MAX_MX_HOSTS)];
 	for (index, host) in hosts.iter().enumerate() {
 		let host_str = host.to_string();
@@ -249,10 +259,26 @@ pub async fn check_smtp(
 			Err(error) if index + 1 < hosts.len() && !answered && is_host_unreachable(error) => {
 				continue
 			}
-			_ => return (result, debug),
+			_ => {
+				if use_cache && matches!(&result, Ok(details) if details.is_catch_all) {
+					catch_all_cache::remember_catch_all(domain);
+				}
+				return (result, debug);
+			}
 		}
 	}
 	unreachable!("The last host always returns. qed.")
+}
+
+/// What a check on a catch-all domain finds: the server accepts the address.
+fn catch_all_details() -> SmtpDetails {
+	SmtpDetails {
+		can_connect_smtp: true,
+		has_full_inbox: false,
+		is_catch_all: true,
+		is_deliverable: true,
+		is_disabled: false,
+	}
 }
 
 #[cfg(test)]

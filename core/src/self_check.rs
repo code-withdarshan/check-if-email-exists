@@ -308,7 +308,7 @@ mod tests {
 	#[test]
 	fn private_and_shared_addresses_are_not_public() {
 		for ip in ["10.0.0.5", "192.168.1.2", "172.16.0.1", "100.64.3.4", "127.0.0.1", "169.254.1.1"] {
-			assert!(!is_public_ipv4(ip.parse().unwrap()), "{ip}");
+			assert!(!is_public_ipv4(ip.parse().unwrap()), "{}", ip);
 		}
 		assert!(is_public_ipv4("203.0.114.9".parse().unwrap()));
 		assert!(is_public_ipv4("8.8.8.8".parse().unwrap()));

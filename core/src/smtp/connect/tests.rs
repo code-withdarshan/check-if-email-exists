@@ -744,3 +744,42 @@ fn mail_servers_are_tried_over_ipv4_first() {
 		["192.0.2.1:25", "192.0.2.2:25", "[2001:db8::1]:25", "[2001:db8::2]:25"]
 	);
 }
+
+#[tokio::test]
+async fn known_catch_all_domain_skips_the_smtp_conversation() {
+	crate::smtp::catch_all_cache::ENABLED_IN_TEST.with(|enabled| enabled.set(true));
+	let domain = "cached-catch-all.example";
+	let (first, debug, _) = verify_hosts(
+		domain,
+		&["127.0.0.1."],
+		vec![vec![Reply::Text(ACCEPTED)]],
+		1,
+		Duration::from_secs(2),
+		false,
+	)
+	.await;
+	assert_eq!(reachable(&first), Reachable::Risky);
+	assert!(!debug.catch_all_cached);
+
+	// No server conversation this time: the domain is known to accept everything.
+	let (second, debug, commands) =
+		verify_hosts(domain, &["127.0.0.1."], vec![], 1, Duration::from_secs(2), false).await;
+	assert_eq!(reachable(&second), Reachable::Risky);
+	assert!(second.unwrap().is_catch_all);
+	assert!(debug.catch_all_cached);
+	assert!(debug.probes.is_empty());
+	assert!(commands.is_empty());
+
+	// A domain that rejects made-up addresses is never cached.
+	let other = "cached-not-catch-all.example";
+	let (_, _, _) = verify_hosts(
+		other,
+		&["127.0.0.1."],
+		vec![vec![Reply::Text(MISSING), Reply::Text(ACCEPTED)]],
+		1,
+		Duration::from_secs(2),
+		false,
+	)
+	.await;
+	assert!(!crate::smtp::catch_all_cache::is_known_catch_all(other));
+}
