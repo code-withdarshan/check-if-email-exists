@@ -26,13 +26,13 @@ http_port = 8080
 # Ideally, this should match the reverse DNS of the server's IP address.
 #
 # Env variable: RCH__HELLO_NAME
-hello_name = "localhost"
+hello_name = "verifier-app.iqonicdesign.net"
 
 # Email to use during the MAIL FROM command in the SMTP conversation.
 # Ideally, the domain of this email should match the "hello_name" above.
 #
 # Env variable: RCH__FROM_EMAIL
-from_email = "hello@localhost"
+from_email = "reach@iqonicdesign.net"
 
 # Timeout for each SMTP connection, in seconds. Leaving it commented out will
 # not set a timeout, i.e. the connection will wait indefinitely. If using a
@@ -239,6 +239,6 @@ concurrency = 5
 # you can add a JSON object to the "extra" field. This object will be stored
 # as a JSONB column in the database. This is for example useful to track who
 # initiated the verification request in a multi-tenant system.
-# 
+#
 # Env variable: RCH__STORAGE__POSTGRES__EXTRA
 # extra = { "my_custom_key" = "my_custom_value" }
