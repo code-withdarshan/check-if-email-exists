@@ -19,6 +19,7 @@ use crate::storage::commercial_license_trial::send_to_reacher;
 use crate::throttle::ThrottleResult;
 use crate::worker::consume::{CHECK_EMAIL_QUEUE, FAILED_QUEUE};
 use crate::worker::single_shot::send_single_shot_reply;
+use check_if_email_exists::self_check::is_public_ipv4;
 use check_if_email_exists::{
 	check_email, CheckEmailInput, CheckEmailOutput, Reachable, LOG_TARGET,
 };
@@ -30,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::Debug;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -71,6 +73,12 @@ pub enum TaskError {
 	Reqwest(reqwest::Error),
 	#[error("Error converting headers: {0}")]
 	Headers(#[from] http::Error),
+	/// The verification did not finish within the configured deadline.
+	#[error("Verification did not complete within {0:?}")]
+	Timeout(Duration),
+	/// The webhook URL is not allowed, e.g. it points at a private network.
+	#[error("Webhook destination refused: {0}")]
+	WebhookDestination(String),
 }
 
 impl TaskError {
@@ -81,6 +89,8 @@ impl TaskError {
 			Self::Lapin(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::Reqwest(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::Headers(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
+			Self::WebhookDestination(_) => StatusCode::BAD_REQUEST,
 		}
 	}
 }
@@ -152,7 +162,14 @@ pub(crate) async fn do_check_email_work(
 	// The webhook is sent only once the final result is stored (below), so a
 	// retried verification does not notify twice, and a webhook failure does
 	// not re-run the verification.
-	let worker_output: Result<CheckEmailOutput, TaskError> = Ok(check_email(&task.input).await);
+	// A total deadline, so slow or hostile mail servers cannot hold a worker
+	// slot indefinitely. A timeout is a terminal result: it is stored, not
+	// requeued.
+	let deadline = Duration::from_secs(config.request_timeout);
+	let worker_output: Result<CheckEmailOutput, TaskError> =
+		tokio::time::timeout(deadline, check_email(&task.input))
+			.await
+			.map_err(|_| TaskError::Timeout(deadline));
 
 	match (&worker_output, delivery.redelivered) {
 		(Ok(output), false) if output.is_reachable == Reachable::Unknown => {
@@ -164,7 +181,7 @@ pub(crate) async fn do_check_email_work(
 				.await?;
 			info!(target: LOG_TARGET, email=?&task.input.to_email, is_reachable=?Reachable::Unknown, "Requeued message");
 		}
-		(Err(e), false) => {
+		(Err(e), false) if !matches!(e, TaskError::Timeout(_)) => {
 			// Same as above, if processing the message failed, we requeue it.
 			delivery
 				.reject(BasicRejectOptions { requeue: true })
@@ -205,7 +222,9 @@ pub(crate) async fn do_check_email_work(
 			// The result is safely stored, so a webhook failure is logged
 			// rather than failing (and retrying) the task.
 			if let Ok(output) = &worker_output {
-				if let Err(e) = send_webhook(task, output).await {
+				if let Err(e) =
+					send_webhook_with(task, output, config.worker.allow_private_webhooks).await
+				{
 					error!(target: LOG_TARGET, email=?task.input.to_email, job_id=?task.job_id, error=%e, "Webhook delivery failed");
 				}
 			}
@@ -298,13 +317,78 @@ pub async fn check_email_and_send_result(
 	Ok(output)
 }
 
-/// Sends a result to the task's `on_each_email` webhook, if any. Each attempt
-/// has a timeout, non-2xx responses count as failures, and failures are
-/// retried with a growing delay. The `x-reacher-task-id` header lets the
-/// receiver discard duplicate deliveries.
+/// Whether `ip` is a public internet address, i.e. not loopback, private,
+/// link-local, shared, multicast, documentation or otherwise reserved.
+fn is_public_ip(ip: IpAddr) -> bool {
+	match ip {
+		IpAddr::V4(v4) => is_public_ipv4(v4),
+		IpAddr::V6(v6) => {
+			if let Some(v4) = v6.to_ipv4_mapped() {
+				return is_public_ipv4(v4);
+			}
+			let first = v6.segments()[0];
+			!(v6.is_loopback()
+				|| v6.is_unspecified()
+				|| v6.is_multicast()
+				|| (first & 0xfe00) == 0xfc00 // unique local
+				|| (first & 0xffc0) == 0xfe80 // link-local
+				|| first == 0x2001 && v6.segments()[1] == 0x0db8) // documentation
+		}
+	}
+}
+
+/// Builds a client that may only reach the webhook's host at addresses checked
+/// here. The client connects to exactly those addresses, so a DNS answer that
+/// changes between the check and the request cannot redirect it, and HTTP
+/// redirects are not followed.
+async fn webhook_client(url: &str, allow_private: bool) -> Result<reqwest::Client, TaskError> {
+	let refuse = |reason: &str| TaskError::WebhookDestination(reason.to_string());
+	let url = reqwest::Url::parse(url).map_err(|e| refuse(&e.to_string()))?;
+	if !matches!(url.scheme(), "http" | "https") {
+		return Err(refuse("only http and https URLs are allowed"));
+	}
+	let host = url.host_str().ok_or_else(|| refuse("URL has no host"))?;
+	let port = url
+		.port_or_known_default()
+		.ok_or_else(|| refuse("URL has no port"))?;
+	let lookup_host = host.trim_start_matches('[').trim_end_matches(']');
+	let addrs: Vec<SocketAddr> = tokio::net::lookup_host((lookup_host, port))
+		.await
+		.map_err(|e| refuse(&format!("cannot resolve {host}: {e}")))?
+		.collect();
+	if addrs.is_empty() {
+		return Err(refuse(&format!("{host} has no address")));
+	}
+	if !allow_private && addrs.iter().any(|a| !is_public_ip(a.ip())) {
+		return Err(refuse(&format!(
+			"{host} resolves to a private or reserved address"
+		)));
+	}
+	Ok(reqwest::Client::builder()
+		.timeout(WEBHOOK_TIMEOUT)
+		.redirect(reqwest::redirect::Policy::none())
+		.resolve_to_addrs(host, &addrs)
+		.build()?)
+}
+
+/// Sends a result to the task's `on_each_email` webhook, if any, refusing
+/// private destinations. See `send_webhook_with`.
 pub async fn send_webhook(
 	task: &CheckEmailTask,
 	output: &CheckEmailOutput,
+) -> Result<(), TaskError> {
+	send_webhook_with(task, output, false).await
+}
+
+/// Sends a result to the task's `on_each_email` webhook, if any. Each attempt
+/// has a timeout, non-2xx responses count as failures, and failures are
+/// retried with a growing delay. The `x-reacher-task-id` header lets the
+/// receiver discard duplicate deliveries. Unless `allow_private` is set, the
+/// URL must resolve only to public addresses.
+pub async fn send_webhook_with(
+	task: &CheckEmailTask,
+	output: &CheckEmailOutput,
+	allow_private: bool,
 ) -> Result<(), TaskError> {
 	let Some(TaskWebhook {
 		on_each_email: Some(webhook),
@@ -318,9 +402,7 @@ pub async fn send_webhook(
 		extra: &webhook.extra,
 	};
 	let headers: HeaderMap = (&webhook.headers).try_into()?;
-	let client = reqwest::Client::builder()
-		.timeout(WEBHOOK_TIMEOUT)
-		.build()?;
+	let client = webhook_client(&webhook.url, allow_private).await?;
 
 	let mut attempt = 1;
 	loop {
@@ -364,6 +446,36 @@ mod tests {
 
 		let decoded: CheckEmailTask = serde_json::from_value(json).unwrap();
 		assert_eq!(decoded.task_id, None);
+	}
+
+	#[test]
+	fn only_public_ips_are_public() {
+		for ip in [
+			"127.0.0.1",
+			"10.1.2.3",
+			"172.16.0.1",
+			"192.168.1.1",
+			"169.254.169.254",
+			"100.64.0.1",
+			"0.0.0.0",
+			"::1",
+			"fc00::1",
+			"fe80::1",
+			"::ffff:127.0.0.1",
+		] {
+			assert!(!is_public_ip(ip.parse().unwrap()), "{}", ip);
+		}
+		for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+			assert!(is_public_ip(ip.parse().unwrap()), "{}", ip);
+		}
+	}
+
+	#[tokio::test]
+	async fn webhook_refuses_non_http_schemes() {
+		assert!(matches!(
+			webhook_client("file:///etc/passwd", true).await,
+			Err(TaskError::WebhookDestination(_))
+		));
 	}
 
 	#[test]
@@ -413,7 +525,7 @@ mod tests {
 			task_id: Some(task_id),
 		};
 
-		send_webhook(&task, &CheckEmailOutput::default())
+		send_webhook_with(&task, &CheckEmailOutput::default(), true)
 			.await
 			.unwrap();
 

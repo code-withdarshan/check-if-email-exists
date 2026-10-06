@@ -16,6 +16,7 @@
 
 //! This file implements the `POST /v0/check_email` endpoint.
 
+use check_if_email_exists::smtp::is_valid_hello_name;
 use check_if_email_exists::smtp::verif_method::VerifMethod;
 use check_if_email_exists::{check_email, CheckEmailInput, CheckEmailInputProxy, LOG_TARGET};
 use serde::{Deserialize, Serialize};
@@ -42,18 +43,50 @@ pub struct CheckEmailRequest {
 }
 
 impl CheckEmailRequest {
+	/// Rejects request fields that are unsafe to use, with a message for the
+	/// caller. `to_check_email_input` also ignores them, as a second line.
+	pub fn validate(&self) -> Result<(), ReacherResponseError> {
+		if self.to_email.is_empty() {
+			return Err(ReacherResponseError::new(
+				http::StatusCode::BAD_REQUEST,
+				"to_email field is required.",
+			));
+		}
+		if let Some(name) = &self.hello_name {
+			if !is_valid_hello_name(name) {
+				return Err(ReacherResponseError::new(
+					http::StatusCode::BAD_REQUEST,
+					"hello_name must be a hostname or an address literal.",
+				));
+			}
+		}
+		Ok(())
+	}
+
+	/// The request's `hello_name`, unless it is unsafe to send.
+	fn safe_hello_name(&self) -> Option<&String> {
+		self.hello_name.as_ref().filter(|n| is_valid_hello_name(n))
+	}
+
+	/// The request's SMTP timeout, capped so one verification cannot outlast
+	/// the request deadline.
+	fn capped_smtp_timeout(&self, config: &BackendConfig) -> Option<Duration> {
+		self.smtp_timeout
+			.map(|t| t.min(Duration::from_secs(config.request_timeout)))
+	}
+
 	pub fn to_check_email_input(&self, config: Arc<BackendConfig>) -> CheckEmailInput {
 		let hello_name = self
-			.hello_name
-			.clone()
+			.safe_hello_name()
+			.cloned()
 			.unwrap_or_else(|| config.hello_name.clone());
 		let from_email = self
 			.from_email
 			.clone()
 			.unwrap_or_else(|| config.from_email.clone());
-		let smtp_timeout = self
-			.smtp_timeout
-			.or_else(|| config.smtp_timeout.map(Duration::from_secs));
+		let request_smtp_timeout = self.capped_smtp_timeout(&config);
+		let smtp_timeout =
+			request_smtp_timeout.or_else(|| config.smtp_timeout.map(Duration::from_secs));
 		let smtp_port = self.smtp_port.unwrap_or(25);
 		let retries = 1;
 
@@ -68,7 +101,7 @@ impl CheckEmailRequest {
 				hello_name.clone(),
 				from_email.clone(),
 				smtp_port,
-				smtp_timeout.clone(),
+				smtp_timeout,
 				retries,
 			)
 		} else {
@@ -79,10 +112,10 @@ impl CheckEmailRequest {
 			if let Some(value) = &self.from_email {
 				smtp.from_email = value.clone();
 			}
-			if let Some(value) = &self.hello_name {
+			if let Some(value) = self.safe_hello_name() {
 				smtp.hello_name = value.clone();
 			}
-			if let Some(value) = self.smtp_timeout {
+			if let Some(value) = request_smtp_timeout {
 				smtp.smtp_timeout = Some(value);
 			}
 			if let Some(value) = self.smtp_port {
@@ -96,7 +129,7 @@ impl CheckEmailRequest {
 				self.proxy.is_some(),
 				hello_name.clone(),
 				from_email.clone(),
-				smtp_timeout.clone(),
+				smtp_timeout,
 				smtp_port,
 				retries,
 			);
@@ -124,23 +157,44 @@ impl CheckEmailRequest {
 	}
 }
 
-/// The main endpoint handler that implements the logic of this route.
+/// The main endpoint handler that implements the logic of this route. It
+/// applies the same quota, concurrency limit and deadline as v1 direct mode.
 async fn http_handler(
 	config: Arc<BackendConfig>,
 	body: CheckEmailRequest,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-	// The to_email field must be present
-	if body.to_email.is_empty() {
-		Err(
-			ReacherResponseError::new(http::StatusCode::BAD_REQUEST, "to_email field is required.")
-				.into(),
+	body.validate()?;
+
+	if let Err(throttle_result) = config.get_throttle_manager().try_acquire().await {
+		return Err(ReacherResponseError::new(
+			http::StatusCode::TOO_MANY_REQUESTS,
+			format!(
+				"Rate limit {} exceeded, please wait {:?}",
+				throttle_result.limit_type, throttle_result.delay
+			),
 		)
-	} else {
-		// Run the future to check an email.
-		Ok(warp::reply::json(
-			&check_email(&body.to_check_email_input(Arc::clone(&config))).await,
-		))
+		.into());
 	}
+
+	let deadline = Duration::from_secs(config.request_timeout);
+	let work = async {
+		let _permit = config
+			.verification_slots()
+			.acquire_owned()
+			.await
+			.map_err(|e| ReacherResponseError::new(http::StatusCode::SERVICE_UNAVAILABLE, e))?;
+		Ok::<_, ReacherResponseError>(
+			check_email(&body.to_check_email_input(Arc::clone(&config))).await,
+		)
+	};
+	let output = tokio::time::timeout(deadline, work).await.map_err(|_| {
+		ReacherResponseError::new(
+			http::StatusCode::GATEWAY_TIMEOUT,
+			format!("Verification did not complete within {:?}", deadline),
+		)
+	})??;
+
+	Ok(warp::reply::json(&output))
 }
 
 /// Create the `POST /check_email` endpoint.

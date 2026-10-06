@@ -26,7 +26,7 @@ http_port = 8080
 # Ideally, this should match the reverse DNS of the server's IP address.
 #
 # Env variable: RCH__HELLO_NAME
-hello_name = "verifier-app.iqonicdesign.net"
+hello_name = "[Servername]"
 
 # Email to use during the MAIL FROM command in the SMTP conversation.
 # Ideally, the domain of this email should match the "hello_name" above.
@@ -212,6 +212,12 @@ max_requests_per_day = 10000
 #
 # Env variable: RCH__WORKER__ENABLE
 enable = false
+
+# Allow webhook URLs that resolve to private, loopback or link-local
+# addresses. Leave off unless the webhook receiver runs on your own network.
+#
+# Env variable: RCH__WORKER__ALLOW_PRIVATE_WEBHOOKS
+allow_private_webhooks = false
 
 # RabbitMQ configuration.
 [worker.rabbitmq]

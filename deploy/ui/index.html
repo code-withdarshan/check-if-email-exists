@@ -368,7 +368,10 @@
 		const x = r.result || {};
 		if (typeof x.error === "string") return "The check could not finish: " + x.error;
 		if (x.syntax && x.syntax.is_valid_syntax === false) return "Not a valid email address format.";
-		if (x.mx?.error || x.mx?.accepts_mail === false) return "The domain has no mail server, so it cannot receive email.";
+		// mx.error means the lookup itself failed (e.g. a DNS timeout), which says
+		// nothing about the domain; a completed lookup without MX sets accepts_mail.
+		if (x.mx?.error) return "Could not look up the domain's mail servers (DNS error), so the result is inconclusive. Try again later.";
+		if (x.mx?.accepts_mail === false) return "The domain has no mail server, so it cannot receive email.";
 		const s = x.smtp || {};
 		if (s.error) {
 			const m = String(s.error.message || "");
@@ -478,9 +481,18 @@
 	});
 
 	// ---- Reading addresses ----
-	const EMAIL_RE = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-	const EMAIL_ONE = /^[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
-	function cleanEmail(s) { return String(s).trim().replace(/^mailto:/i, "").replace(/^[<"'.-]+|[>"'.-]+$/g, ""); }
+	// A match must start at a separator and its local part allows every RFC 5322
+	// atext character, so an address is taken whole rather than as a substring.
+	const EMAIL_RE = /(?<![^\s,;:<>"()[\]])[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+	const EMAIL_ONE = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+	// Removes only wrappers around an address (mailto:, <>, matching quotes,
+	// trailing punctuation); never characters that belong to the address.
+	function cleanEmail(s) {
+		let e = String(s).trim().replace(/^mailto:/i, "").replace(/^<(.*)>$/, "$1");
+		const q = e.match(/^(["'])(.*)\1$/);
+		if (q) e = q[2];
+		return e.replace(/^"|"$/g, "").replace(/[>.,;:]+$/, "");
+	}
 	function extractEmails(text) {
 		const seen = new Set(), list = [];
 		for (const m of text.match(EMAIL_RE) || []) {

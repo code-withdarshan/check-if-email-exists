@@ -17,7 +17,6 @@
 pub(crate) mod catch_all_cache;
 mod connect;
 mod error;
-mod gmail;
 mod headless;
 mod http_api;
 mod outlook;
@@ -39,6 +38,28 @@ use verif_method::{
 
 pub use crate::mx::{is_gmail, is_hotmail, is_hotmail_b2b, is_hotmail_b2c, is_yahoo};
 pub use error::*;
+
+/// Whether `name` is safe to send as the EHLO identity: a DNS hostname, or an
+/// address literal such as `[192.0.2.1]`. The SMTP library writes it verbatim,
+/// so anything else (CR/LF in particular) could inject extra SMTP commands.
+pub fn is_valid_hello_name(name: &str) -> bool {
+	if let Some(literal) = name.strip_prefix('[').and_then(|n| n.strip_suffix(']')) {
+		let literal = literal.strip_prefix("IPv6:").unwrap_or(literal);
+		return literal.parse::<std::net::IpAddr>().is_ok();
+	}
+	let name = name.strip_suffix('.').unwrap_or(name);
+	!name.is_empty()
+		&& name.len() <= 253
+		&& name.split('.').all(|label| {
+			!label.is_empty()
+				&& label.len() <= 63
+				&& !label.starts_with('-')
+				&& !label.ends_with('-')
+				&& label
+					.bytes()
+					.all(|b| b.is_ascii_alphanumeric() || b == b'-')
+		})
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SmtpDebugVerifMethodSmtp {
@@ -229,7 +250,8 @@ pub async fn check_smtp(
 		..Default::default()
 	};
 	let use_cache = catch_all_cache::enabled();
-	if use_cache && catch_all_cache::is_known_catch_all(domain) {
+	let route = catch_all_cache::route(&verif_method);
+	if use_cache && catch_all_cache::is_known_catch_all(domain, &route) {
 		debug.catch_all_cached = true;
 		return (Ok(catch_all_details()), debug);
 	}
@@ -261,7 +283,7 @@ pub async fn check_smtp(
 			}
 			_ => {
 				if use_cache && matches!(&result, Ok(details) if details.is_catch_all) {
-					catch_all_cache::remember_catch_all(domain);
+					catch_all_cache::remember_catch_all(domain, &route);
 				}
 				return (result, debug);
 			}
@@ -292,6 +314,29 @@ mod tests {
 	use hickory_proto::rr::Name;
 	use std::{str::FromStr, time::Duration};
 	use tokio::runtime::Runtime;
+
+	#[test]
+	fn hello_name_rejects_command_injection() {
+		for ok in [
+			"localhost",
+			"mail.example.org",
+			"mail.example.org.",
+			"[192.0.2.1]",
+			"[IPv6:2001:db8::1]",
+		] {
+			assert!(is_valid_hello_name(ok), "{}", ok);
+		}
+		for bad in [
+			"",
+			"a.example\r\nNOOP",
+			"a b",
+			"-a.example",
+			"a..example",
+			"[not-an-ip]",
+		] {
+			assert!(!is_valid_hello_name(bad), "{:?}", bad);
+		}
+	}
 
 	#[test]
 	fn should_timeout() {

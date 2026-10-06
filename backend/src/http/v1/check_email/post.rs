@@ -50,31 +50,24 @@ async fn handle_without_worker(
 		.map_err(|e| ReacherResponseError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
 
 	info!(target: LOG_TARGET, email=body.to_email, "Starting verification");
-	let input = body.to_check_email_input(Arc::clone(&config));
-	let result = check_email(&input).await;
-	let result_ok = Ok(result);
+	let task = CheckEmailTask {
+		input: body.to_check_email_input(Arc::clone(&config)),
+		job_id: CheckEmailJobId::SingleShot,
+		webhook: None,
+		task_id: None,
+	};
+	let result_ok = Ok(check_email(&task.input).await);
 
 	// Store the result regardless of how we got it
 	let storage = Arc::clone(&config).get_storage_adapter();
 	storage
-		.store(
-			&CheckEmailTask {
-				input: body.to_check_email_input(Arc::clone(&config)),
-				job_id: CheckEmailJobId::SingleShot,
-				webhook: None,
-				task_id: None,
-			},
-			&result_ok,
-			storage.get_extra(),
-		)
+		.store(&task, &result_ok, storage.get_extra())
 		.map_err(ReacherResponseError::from)
 		.await?;
 
 	// If we're in the Commercial License Trial, we also store the
 	// result by sending it to back to Reacher.
-	send_to_reacher(Arc::clone(&config), &body.to_email, &result_ok)
-		.await
-		.map_err(ReacherResponseError::from)?;
+	send_to_reacher(Arc::clone(&config), &body.to_email, &result_ok).await?;
 
 	let result = result_ok.unwrap();
 	info!(target: LOG_TARGET, email=body.to_email, is_reachable=?result.is_reachable, "Done verification");
@@ -111,7 +104,10 @@ async fn handle_with_worker(
 		.with_content_type("application/json".into())
 		.with_priority(MAX_QUEUE_PRIORITY) // Highes priority
 		.with_correlation_id(correlation_id.to_string().into())
-		.with_reply_to(reply_queue.name().to_owned());
+		.with_reply_to(reply_queue.name().to_owned())
+		// Nobody waits for the answer after the request deadline, so a task
+		// still queued by then is dropped rather than run for nothing.
+		.with_expiration((config.request_timeout * 1000).to_string().into());
 
 	publish_task(
 		channel.clone(),
@@ -191,14 +187,7 @@ async fn http_handler(
 	config: Arc<BackendConfig>,
 	body: CheckEmailRequest,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-	// The to_email field must be present
-	if body.to_email.is_empty() {
-		return Err(ReacherResponseError::new(
-			http::StatusCode::BAD_REQUEST,
-			"to_email field is required.",
-		)
-		.into());
-	}
+	body.validate()?;
 
 	// In direct mode this process sends the SMTP traffic, so reserve throttle
 	// capacity here, atomically. In worker mode the consumer reserves it at

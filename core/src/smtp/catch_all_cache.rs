@@ -17,7 +17,12 @@
 //! Domains recently found to accept every address. Every check on such a
 //! domain ends "catch-all", so further checks skip the SMTP conversation:
 //! lists finish faster and the domain's servers see fewer connections.
+//!
+//! Answers are kept per route (proxy, port and SMTP identity), so an answer
+//! obtained through one route, such as a caller-supplied proxy, never decides
+//! a check made through another.
 
+use super::verif_method::VerifMethodSmtp;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -43,16 +48,51 @@ pub fn enabled() -> bool {
 	true
 }
 
-/// Whether the domain was found to be catch-all within the last day.
-pub fn is_known_catch_all(domain: &str) -> bool {
+/// Identifies the route a check takes to the mail server.
+pub fn route(verif_method: &VerifMethodSmtp) -> String {
+	let config = &verif_method.config;
+	let proxy = verif_method
+		.proxy
+		.as_ref()
+		.map(|p| {
+			format!(
+				"{}:{}:{}",
+				p.host,
+				p.port,
+				p.username.as_deref().unwrap_or("")
+			)
+		})
+		.unwrap_or_default();
+	format!(
+		"{proxy}|{}|{}|{}",
+		config.smtp_port, config.hello_name, config.from_email
+	)
+}
+
+fn key(domain: &str, route: &str) -> String {
+	format!("{}|{route}", domain.to_ascii_lowercase())
+}
+
+/// Whether the domain was found to be catch-all through this route within
+/// the last day.
+pub fn is_known_catch_all(domain: &str, route: &str) -> bool {
 	let Ok(domains) = DOMAINS.lock() else { return false };
 	domains
-		.get(&domain.to_ascii_lowercase())
+		.get(&key(domain, route))
 		.is_some_and(|seen| seen.elapsed() < TTL)
 }
 
-/// Records that the domain's mail server accepted a made-up address.
-pub fn remember_catch_all(domain: &str) {
+/// Whether the domain is cached through any route.
+#[cfg(test)]
+pub(crate) fn is_known_on_any_route(domain: &str) -> bool {
+	let prefix = format!("{}|", domain.to_ascii_lowercase());
+	let Ok(domains) = DOMAINS.lock() else { return false };
+	domains.keys().any(|k| k.starts_with(&prefix))
+}
+
+/// Records that the domain's mail server, reached through this route,
+/// accepted a made-up address.
+pub fn remember_catch_all(domain: &str, route: &str) {
 	let Ok(mut domains) = DOMAINS.lock() else { return };
 	if domains.len() >= MAX_DOMAINS {
 		domains.retain(|_, seen| seen.elapsed() < TTL);
@@ -60,7 +100,7 @@ pub fn remember_catch_all(domain: &str) {
 			domains.clear();
 		}
 	}
-	domains.insert(domain.to_ascii_lowercase(), Instant::now());
+	domains.insert(key(domain, route), Instant::now());
 }
 
 #[cfg(test)]
@@ -69,9 +109,15 @@ mod tests {
 
 	#[test]
 	fn remembered_domains_are_known_case_insensitively() {
-		assert!(!is_known_catch_all("cache-test-accepts-all.example"));
-		remember_catch_all("Cache-Test-Accepts-All.example");
-		assert!(is_known_catch_all("cache-test-accepts-all.example"));
-		assert!(!is_known_catch_all("cache-test-other.example"));
+		assert!(!is_known_catch_all("cache-test-accepts-all.example", "r"));
+		remember_catch_all("Cache-Test-Accepts-All.example", "r");
+		assert!(is_known_catch_all("cache-test-accepts-all.example", "r"));
+		assert!(!is_known_catch_all("cache-test-other.example", "r"));
+	}
+
+	#[test]
+	fn answers_do_not_cross_routes() {
+		remember_catch_all("cache-test-route.example", "proxy-a");
+		assert!(!is_known_catch_all("cache-test-route.example", "proxy-b"));
 	}
 }

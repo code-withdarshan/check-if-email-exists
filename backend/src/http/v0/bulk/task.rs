@@ -212,8 +212,7 @@ pub async fn email_verification_task(
 	// never occur currently
 	if let Some(response) = final_response {
 		// write results and terminate iteration
-		#[allow(unused_variables)]
-		let rec = sqlx::query!(
+		sqlx::query!(
 			r#"
 			INSERT INTO email_results (job_id, result)
 			VALUES ($1, $2)

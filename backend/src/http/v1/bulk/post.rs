@@ -22,10 +22,10 @@ use check_if_email_exists::LOG_TARGET;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
 use lapin::Channel;
-use lapin::{options::*, BasicProperties};
+use lapin::{options::*, publisher_confirm::Confirmation, BasicProperties};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use warp::http::StatusCode;
 use warp::Filter;
 
@@ -92,7 +92,9 @@ async fn http_handler(
 
 	let properties = BasicProperties::default()
 		.with_content_type("application/json".into())
-		.with_priority(1); // Low priority
+		.with_priority(1) // Low priority
+		// Persistent, so queued tasks survive a broker restart.
+		.with_delivery_mode(2);
 
 	stream
 		.map::<Result<_, ReacherResponseError>, _>(Ok)
@@ -121,7 +123,14 @@ async fn http_handler(
 			)
 			.await
 		})
-		.await?;
+		.await
+		.map_err(|e| {
+			error!(target: LOG_TARGET, job_id=rec.id, error=%e, "Bulk job only partially queued");
+			ReacherResponseError::new(
+				StatusCode::INTERNAL_SERVER_ERROR,
+				format!("Job {} was only partially queued: {}", rec.id, e),
+			)
+		})?;
 
 	info!(
 		target: LOG_TARGET,
@@ -138,11 +147,17 @@ pub async fn publish_task(
 	properties: BasicProperties,
 ) -> Result<(), ReacherResponseError> {
 	let task_json = serde_json::to_vec(&task)?;
-	channel
+	// The channel has publisher confirms on, so this waits for the broker to
+	// take responsibility for the message; `mandatory` makes an unroutable
+	// message come back instead of being dropped.
+	let confirmation = channel
 		.basic_publish(
 			"",
 			CHECK_EMAIL_QUEUE,
-			BasicPublishOptions::default(),
+			BasicPublishOptions {
+				mandatory: true,
+				..Default::default()
+			},
 			&task_json,
 			properties,
 		)
@@ -150,6 +165,21 @@ pub async fn publish_task(
 		.map_err(ReacherResponseError::from)?
 		.await
 		.map_err(ReacherResponseError::from)?;
+	match confirmation {
+		Confirmation::Ack(None) | Confirmation::NotRequested => {}
+		Confirmation::Ack(Some(_)) => {
+			return Err(ReacherResponseError::new(
+				StatusCode::SERVICE_UNAVAILABLE,
+				format!("Queue {CHECK_EMAIL_QUEUE} does not exist"),
+			))
+		}
+		Confirmation::Nack(_) => {
+			return Err(ReacherResponseError::new(
+				StatusCode::SERVICE_UNAVAILABLE,
+				"The message broker refused the task",
+			))
+		}
+	}
 
 	debug!(target: LOG_TARGET, email=?task.input.to_email, queue=?CHECK_EMAIL_QUEUE, "Published task");
 

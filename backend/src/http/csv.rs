@@ -36,14 +36,27 @@ pub struct CsvResponse {
 	syntax_username: Option<String>,
 	error: Option<String>,
 }
+/// Makes untrusted text safe to open in a spreadsheet: a cell starting with
+/// `=`, `+`, `-`, `@`, tab or carriage return could be evaluated as a
+/// formula, so it gets a leading apostrophe. CSV quoting alone does not help.
+fn neutralize(text: String) -> String {
+	if text.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+		format!("'{text}")
+	} else {
+		text
+	}
+}
+
 impl TryFrom<CsvWrapper> for CsvResponse {
 	type Error = &'static str;
 	fn try_from(value: CsvWrapper) -> Result<Self, Self::Error> {
 		let v = value.0;
-		let input = v["input"]
-			.as_str()
-			.ok_or("input should be a string")?
-			.to_owned();
+		let input = neutralize(
+			v["input"]
+				.as_str()
+				.ok_or("input should be a string")?
+				.to_owned(),
+		);
 		let is_reachable = v["is_reachable"]
 			.as_str()
 			.ok_or("is_reachable should be a string")?
@@ -69,7 +82,9 @@ impl TryFrom<CsvWrapper> for CsvResponse {
 			is_reachable,
 			misc_is_disposable: v["misc"]["is_disposable"].as_bool(),
 			misc_is_role_account: v["misc"]["is_role_account"].as_bool(),
-			misc_gravatar_url: v["misc"]["gravatar_url"].as_str().map(str::to_owned),
+			misc_gravatar_url: v["misc"]["gravatar_url"]
+				.as_str()
+				.map(|s| neutralize(s.to_owned())),
 			mx_accepts_mail: v["mx"]["accepts_mail"].as_bool(),
 			smtp_can_connect: v["smtp"]["can_connect_smtp"].as_bool(),
 			smtp_has_full_inbox: v["smtp"]["has_full_inbox"].as_bool(),
@@ -77,12 +92,16 @@ impl TryFrom<CsvWrapper> for CsvResponse {
 			smtp_is_deliverable: v["smtp"]["is_deliverable"].as_bool(),
 			smtp_is_disabled: v["smtp"]["is_disabled"].as_bool(),
 			syntax_is_valid_syntax: v["syntax"]["is_valid_syntax"].as_bool(),
-			syntax_domain: v["syntax"]["domain"].as_str().map(str::to_owned),
-			syntax_username: v["syntax"]["username"].as_str().map(str::to_owned),
+			syntax_domain: v["syntax"]["domain"]
+				.as_str()
+				.map(|s| neutralize(s.to_owned())),
+			syntax_username: v["syntax"]["username"]
+				.as_str()
+				.map(|s| neutralize(s.to_owned())),
 			error: if errors.is_empty() {
 				None
 			} else {
-				Some(errors.join("; "))
+				Some(neutralize(errors.join("; ")))
 			},
 		})
 	}
@@ -118,6 +137,18 @@ mod tests {
 		.unwrap();
 		assert_eq!(row.error.as_deref(), Some("worker timeout"));
 		assert_eq!(row.mx_accepts_mail, None);
+	}
+	#[test]
+	fn neutralizes_formula_like_cells() {
+		let row = CsvResponse::try_from(CsvWrapper(json!({
+			"input": "=1+1", "is_reachable": "invalid", "error": "@SUM(A1)",
+			"syntax": {"username": "-2+3", "domain": "example.org"}
+		})))
+		.unwrap();
+		assert_eq!(row.input, "'=1+1");
+		assert_eq!(row.error.as_deref(), Some("'@SUM(A1)"));
+		assert_eq!(row.syntax_username.as_deref(), Some("'-2+3"));
+		assert_eq!(row.syntax_domain.as_deref(), Some("example.org"));
 	}
 	#[test]
 	fn exports_actual_core_response() {

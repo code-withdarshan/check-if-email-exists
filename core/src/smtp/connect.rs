@@ -95,6 +95,12 @@ async fn connect_to_smtp_host(
 	// hostname verification fails if it ends with '.', for example, using
 	// SOCKS5 proxies we can `io: incomplete` error.
 	let clean_host = mx_host.trim_end_matches('.').to_string();
+	if !super::is_valid_hello_name(&verif_method.config.hello_name) {
+		return Err(SmtpError::IOError(std::io::Error::new(
+			std::io::ErrorKind::InvalidInput,
+			"hello_name must be a hostname or an address literal",
+		)));
+	}
 	let smtp_client = SmtpClient::new()
 		.hello_name(ClientId::Domain(verif_method.config.hello_name.to_string()))
 		// Sometimes, using socks5 proxy, we get an `io: incomplete` error
@@ -643,7 +649,6 @@ pub async fn check_smtp_with_retry(
 		// connection errors.
 		Err(SmtpError::HeadlessError(_)) => result,
 		Err(SmtpError::YahooError(_)) => result,
-		Err(SmtpError::GmailError(_)) => result,
 		// Only retry if the SMTP error was unknown.
 		Err(err) if err.get_description().is_none() => {
 			if count <= 1 {

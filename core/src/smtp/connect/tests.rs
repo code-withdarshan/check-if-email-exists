@@ -55,6 +55,28 @@ async fn verify_hosts(
 	accept_extra_recipients: bool,
 ) -> (Result<SmtpDetails, SmtpError>, SmtpDebug, Vec<String>) {
 	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	verify_hosts_on(
+		listener,
+		domain,
+		hosts,
+		attempts,
+		retries,
+		timeout,
+		accept_extra_recipients,
+	)
+	.await
+}
+
+/// Like `verify_hosts`, with the mock server listening on `listener`.
+async fn verify_hosts_on(
+	listener: TcpListener,
+	domain: &str,
+	hosts: &[&str],
+	attempts: Vec<Vec<Reply>>,
+	retries: usize,
+	timeout: Duration,
+	accept_extra_recipients: bool,
+) -> (Result<SmtpDetails, SmtpError>, SmtpDebug, Vec<String>) {
 	let port = listener.local_addr().unwrap().port();
 	// Every scripted probe must arrive over a separate connection, even within
 	// one attempt. This also detects accidental reuse after a catch-all refusal.
@@ -749,7 +771,11 @@ fn mail_servers_are_tried_over_ipv4_first() {
 async fn known_catch_all_domain_skips_the_smtp_conversation() {
 	crate::smtp::catch_all_cache::ENABLED_IN_TEST.with(|enabled| enabled.set(true));
 	let domain = "cached-catch-all.example";
-	let (first, debug, _) = verify_hosts(
+	// The cache is per route, which includes the port, so both checks use one.
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let addr = listener.local_addr().unwrap();
+	let (first, debug, _) = verify_hosts_on(
+		listener,
 		domain,
 		&["127.0.0.1."],
 		vec![vec![Reply::Text(ACCEPTED)]],
@@ -762,8 +788,17 @@ async fn known_catch_all_domain_skips_the_smtp_conversation() {
 	assert!(!debug.catch_all_cached);
 
 	// No server conversation this time: the domain is known to accept everything.
-	let (second, debug, commands) =
-		verify_hosts(domain, &["127.0.0.1."], vec![], 1, Duration::from_secs(2), false).await;
+	let listener = TcpListener::bind(addr).await.unwrap();
+	let (second, debug, commands) = verify_hosts_on(
+		listener,
+		domain,
+		&["127.0.0.1."],
+		vec![],
+		1,
+		Duration::from_secs(2),
+		false,
+	)
+	.await;
 	assert_eq!(reachable(&second), Reachable::Risky);
 	assert!(second.unwrap().is_catch_all);
 	assert!(debug.catch_all_cached);
@@ -781,5 +816,5 @@ async fn known_catch_all_domain_skips_the_smtp_conversation() {
 		false,
 	)
 	.await;
-	assert!(!crate::smtp::catch_all_cache::is_known_catch_all(other));
+	assert!(!crate::smtp::catch_all_cache::is_known_on_any_route(other));
 }

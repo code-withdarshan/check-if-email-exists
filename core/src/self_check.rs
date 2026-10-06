@@ -69,7 +69,8 @@ fn outgoing_ipv4() -> Option<Ipv4Addr> {
 	}
 }
 
-/// Whether mail servers would see this address itself (no NAT in between).
+/// Whether this is a public internet address: mail servers would see it
+/// itself (no NAT in between), and it is not reserved for special use.
 pub fn is_public_ipv4(ip: Ipv4Addr) -> bool {
 	let [a, b, ..] = ip.octets();
 	!(ip.is_private()
@@ -77,8 +78,15 @@ pub fn is_public_ipv4(ip: Ipv4Addr) -> bool {
 		|| ip.is_link_local()
 		|| ip.is_unspecified()
 		|| ip.is_documentation()
+		|| ip.is_broadcast()
+		|| ip.is_multicast()
+		// "This network" (0.0.0.0/8) and reserved (240.0.0.0/4).
+		|| a == 0
+		|| a >= 240
 		// Carrier-grade NAT (100.64.0.0/10).
-		|| (a == 100 && (64..128).contains(&b)))
+		|| (a == 100 && (64..128).contains(&b))
+		// Benchmarking (198.18.0.0/15).
+		|| (a == 198 && (b == 18 || b == 19)))
 }
 
 /// The DNS name for looking up an IPv4 address in a blocklist zone.

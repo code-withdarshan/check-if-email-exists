@@ -50,10 +50,7 @@ impl TryFrom<&Result<CheckEmailOutput, TaskError>> for SingleShotReply {
 				TaskError::Throttle(e.clone()).to_string(),
 				StatusCode::TOO_MANY_REQUESTS.as_u16(),
 			))),
-			Err(e) => Ok(Self::Err((
-				e.to_string(),
-				StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-			))),
+			Err(e) => Ok(Self::Err((e.to_string(), e.status_code().as_u16()))),
 		}
 	}
 }

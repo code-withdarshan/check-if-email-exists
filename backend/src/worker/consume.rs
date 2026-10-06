@@ -55,6 +55,10 @@ pub async fn setup_rabbit_mq(
 		.await
 		.with_context(|| format!("Connecting to rabbitmq {}", &config.url))?;
 	let channel = conn.create_channel().await?;
+	// Publisher confirms, so publishing waits until the broker has the message.
+	channel
+		.confirm_select(ConfirmSelectOptions::default())
+		.await?;
 
 	info!(target: LOG_TARGET, backend=?backend_name,state=?conn.status().state(), "Connected to AMQP broker");
 

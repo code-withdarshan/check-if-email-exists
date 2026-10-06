@@ -280,6 +280,10 @@ pub struct WorkerConfig {
 	pub rabbitmq: Option<RabbitMQConfig>,
 	/// Optional webhook configuration to send email verification results.
 	pub webhook: Option<TaskWebhook>,
+	/// Allow webhooks to private, loopback and link-local addresses. Off by
+	/// default, so callers cannot reach internal services through webhooks.
+	#[serde(default)]
+	pub allow_private_webhooks: bool,
 }
 
 /// Worker configuration that must be present if worker.enable is true. Used as

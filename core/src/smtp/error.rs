@@ -14,9 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::gmail::GmailError;
 use super::headless::HeadlessError;
-use super::outlook::microsoft365::Microsoft365Error;
 use super::parser;
 use super::yahoo::YahooError;
 use crate::util::ser_with_display::ser_with_display;
@@ -32,15 +30,9 @@ pub enum SmtpError {
 	/// Error when verifying a Yahoo email via HTTP requests.
 	#[error("Yahoo error: {0}")]
 	YahooError(YahooError),
-	/// Error when verifying a Gmail email via a HTTP request.
-	#[error("Gmail error: {0}")]
-	GmailError(GmailError),
 	/// Error when verifying a Hotmail email via headless browser.
 	#[error("Headless verification error: {0}")]
 	HeadlessError(HeadlessError),
-	/// Error when verifying a Microsoft 365 email via HTTP request.
-	#[error("Microsoft 365 API error: {0}")]
-	Microsoft365Error(Microsoft365Error),
 	/// Error from async-smtp crate.
 	#[error("SMTP error: {0}")]
 	#[serde(serialize_with = "ser_with_display")]
@@ -70,21 +62,9 @@ impl From<YahooError> for SmtpError {
 	}
 }
 
-impl From<GmailError> for SmtpError {
-	fn from(e: GmailError) -> Self {
-		SmtpError::GmailError(e)
-	}
-}
-
 impl From<HeadlessError> for SmtpError {
 	fn from(e: HeadlessError) -> Self {
 		SmtpError::HeadlessError(e)
-	}
-}
-
-impl From<Microsoft365Error> for SmtpError {
-	fn from(e: Microsoft365Error) -> Self {
-		SmtpError::Microsoft365Error(e)
 	}
 }
 

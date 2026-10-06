@@ -25,7 +25,7 @@ use reacher_backend::worker::do_work::{
 use serde::Deserialize;
 use std::process::Command;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -85,19 +85,29 @@ async fn main() -> Result<(), Error> {
 
 	run_and_wait_chromedriver().await?;
 
-	lambda_runtime::run(service_fn(handler)).await?;
+	// Connect storage once per Lambda instance, as the backend does; without
+	// it the storage adapter is a no-op and results would be dropped. The
+	// configuration holds credentials, so it is never logged.
+	let mut backend_config = load_config().await?;
+	backend_config.connect().await?;
+	let backend_config = Arc::new(backend_config);
+
+	lambda_runtime::run(service_fn(move |event| {
+		handler(event, Arc::clone(&backend_config))
+	}))
+	.await?;
 	Ok(())
 }
 
-async fn handler(event: LambdaEvent<SQSPayload>) -> Result<CheckEmailOutput, Error> {
+async fn handler(
+	event: LambdaEvent<SQSPayload>,
+	backend_config: Arc<BackendConfig>,
+) -> Result<CheckEmailOutput, Error> {
 	let (request, _context) = event.into_parts();
 	// Since we're only fetching a single message, we can safely unwrap here.
 	let message = request.records.first().expect("No messages in the event");
 	let task: CheckEmailPartialTask = serde_json::from_str(&message.body)?;
 	info!(email = ?task.input.to_email, "Processing task");
-
-	let backend_config = Arc::new(load_config().await?);
-	debug!("{:#?}", backend_config);
 
 	let task = &task.into_check_email_task(backend_config.clone());
 
