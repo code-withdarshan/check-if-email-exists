@@ -59,9 +59,11 @@ struct Response {
 
 async fn http_handler(
 	job_id: i32,
+	owner: Option<uuid::Uuid>,
 	pg_pool: PgPool,
 	req: Request,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+	crate::http::account::require_job_owner(&pg_pool, job_id, owner).await?;
 	if req.limit == Some(0)
 		|| req.limit.unwrap_or(50) > 10_000
 		|| req.offset.unwrap_or(0) > i64::MAX as u64
@@ -180,7 +182,7 @@ pub fn v1_get_bulk_job_results(
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
 	warp::path!("v1" / "bulk" / i32 / "results")
 		.and(warp::get())
-		.and(crate::http::check_header(Arc::clone(&config)))
+		.and(crate::http::account::identity(Arc::clone(&config)))
 		.and(with_worker_db(config))
 		.and(warp::query::<Request>())
 		.and_then(http_handler)

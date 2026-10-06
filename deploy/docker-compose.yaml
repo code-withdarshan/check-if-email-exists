@@ -40,6 +40,10 @@ services:
     restart: unless-stopped
     environment:
       RCH__HEADER_SECRET: ${REACHER_SECRET:?Set REACHER_SECRET in deploy/.env}
+      RCH__ACCOUNTS__ENABLED: "true"
+      RCH__ACCOUNTS__PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the exact browser origin}
+      RCH__ACCOUNTS__ENCRYPTION_KEY: ${ACCOUNT_ENCRYPTION_KEY:?Set a 64-character lowercase hex key}
+      RCH__ACCOUNTS__SECURE_COOKIES: ${SECURE_COOKIES:-true}
       RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: ${MAX_PER_MINUTE:-10}
       RCH__THROTTLE__MAX_REQUESTS_PER_DAY: ${MAX_PER_DAY:-300}
       # Background mode: bulk jobs are queued and keep running without the
@@ -71,8 +75,8 @@ services:
       REACHER_SECRET: ${REACHER_SECRET:?Set REACHER_SECRET in deploy/.env}
     volumes:
       - ./ui/index.html:/usr/share/nginx/html/index.html:ro
+      - ./ui/account.js:/usr/share/nginx/html/account.js:ro
       - ./ui/default.conf.template:/etc/nginx/templates/default.conf.template:ro
-      - ./htpasswd:/etc/nginx/htpasswd:ro
     ports:
       # Localhost only by default; put HTTPS in front (Cloudflare Tunnel or a
       # reverse proxy) rather than exposing plain HTTP with a password.

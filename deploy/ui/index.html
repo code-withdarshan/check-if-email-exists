@@ -223,9 +223,114 @@
 	.empty { padding: 28px; text-align: center; color: var(--muted); }
 	.more { text-align: center; margin-top: 10px; }
 </style>
+<style>
+    [hidden] { display: none !important; }
+    .account-shell { max-width: 440px; margin: 8vh auto; padding: 28px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; }
+    .account-shell h1 { margin: 0 0 8px; }
+    .account-form { display: grid; gap: 14px; margin-top: 18px; }
+    .account-form label { display: grid; gap: 6px; font-size: 14px; }
+    .account-form input { width: 100%; box-sizing: border-box; min-width: 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
+    .account-form fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 14px; min-width: 0; }
+    .account-bar { max-width: 1400px; margin: 18px auto 0; padding: 0 24px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .account-bar strong { margin-right: auto; }
+    .account-message { color: var(--accent); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .account-error { color: var(--invalid); }
+    #securityDialog { color: var(--text); background: var(--card); border: 1px solid var(--border); border-radius: 16px; width: min(600px, calc(100vw - 32px)); max-height: 85vh; padding: 24px; box-sizing: border-box; }
+    #securityDialog::backdrop { background: rgba(0,0,0,.55); }
+    #securityDialog section { padding: 18px 0; border-bottom: 1px solid var(--border); }
+    #securityDialog h2 { margin: 0; }
+    #securityDialog h3 { margin: 0 0 10px; }
+    #securityDialog .runhead { margin: 0 0 12px; }
+    #totpQr { display: block; width: 256px; max-width: 100%; height: auto; background: white; margin: 16px auto; padding: 8px; }
+    #totpKey { display: block; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; user-select: all; overflow-wrap: anywhere; }
+    #recoveryList { font-size: 15px; line-height: 1.8; user-select: all; }
+</style>
 </head>
 <body>
-<main>
+<section id="accountGate" class="account-shell" hidden aria-labelledby="authTitle">
+    <p class="hint">EMAIL CHECKER</p>
+    <h1 id="authTitle">Sign in</h1>
+    <p class="sub">Your checks. Your account.</p>
+    <form id="authForm" class="account-form">
+        <fieldset id="loginFields">
+            <label>Username<input id="authUsername" autocomplete="username" minlength="3" maxlength="64" required autocapitalize="none" spellcheck="false"></label>
+            <label>Password<input id="authPassword" type="password" autocomplete="current-password" maxlength="256" required></label>
+            <p id="passwordHint" class="hint" hidden>Use at least 12 characters. Choose a unique password or passphrase.</p>
+        </fieldset>
+        <fieldset id="loginFactor" hidden>
+            <label>Authenticator or recovery code<input id="authCode" autocomplete="one-time-code" maxlength="32" spellcheck="false" autocapitalize="none"></label>
+            <p class="hint">Enter the six-digit code from your app, or one of your saved recovery codes. Each code works once.</p>
+        </fieldset>
+        <button id="authSubmit" type="submit">Sign in</button>
+        <button id="authBack" type="button" class="secondary" hidden>Back to sign in</button>
+    </form>
+    <p id="authError" class="account-error" role="alert"></p>
+    <button id="authToggle" type="button" class="linkbtn">New here? Create an account</button>
+</section>
+<nav id="accountBar" class="account-bar" hidden aria-label="Account">
+    <strong id="accountName"></strong>
+    <button id="openSecurity" type="button" class="secondary small">Account &amp; security</button>
+    <button id="signOut" type="button" class="secondary small">Sign out</button>
+    <span id="accountError" class="account-error" role="alert"></span>
+</nav>
+<dialog id="securityDialog" aria-labelledby="securityTitle">
+    <div class="runhead"><h2 id="securityTitle">Account &amp; security</h2><button id="securityClose" type="button" class="secondary small">Close</button></div>
+    <p id="securityName" class="hint"></p>
+    <p id="securityMessage" class="account-message" role="status" aria-live="polite"></p>
+    <section>
+        <h3 id="twoFactorStatus">Two-factor authentication</h3>
+        <p id="recoveryCount" class="hint"></p>
+        <form id="setupForm" class="account-form">
+            <label>Confirm your password<input id="setupPassword" type="password" autocomplete="current-password" required maxlength="256"></label>
+            <button type="submit">Set up authenticator app</button>
+        </form>
+        <div id="enrollment" hidden>
+            <p>Scan this QR code with Google Authenticator, Microsoft Authenticator, 1Password, or another authenticator app.</p>
+            <img id="totpQr" alt="QR code to add your Email Checker account to an authenticator app">
+            <p>Can't scan? Add a time-based account manually using this setup key:</p>
+            <code id="totpKey"></code><button id="copyTotpKey" type="button" class="linkbtn">Copy setup key</button>
+            <p class="hint">Use six digits and a 30-second interval. Keep this key private. Setup expires in 10 minutes.</p>
+            <form id="enableForm" class="account-form">
+                <label>Code from your app<input id="enableCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label>
+                <button type="submit">Confirm &amp; enable 2FA</button>
+            </form>
+        </div>
+        <div id="manageTwoFactor" hidden>
+            <p class="hint">Security changes require your password and a fresh authenticator code or unused recovery code.</p>
+            <form id="factorActions" class="account-form">
+                <label>Current password<input id="factorPassword" type="password" autocomplete="current-password" required maxlength="256"></label>
+                <label>Authenticator or recovery code<input id="factorCode" autocomplete="one-time-code" required maxlength="32"></label>
+                <button type="submit" value="recovery-codes">Generate new recovery codes</button>
+                <button type="submit" value="2fa-disable" class="secondary">Turn off 2FA</button>
+            </form>
+        </div>
+        <div id="recoveryPanel" hidden>
+            <h3>Save your recovery codes</h3><p>Each code works once if you lose access to your authenticator. These codes are shown only now. Store them somewhere private.</p>
+            <pre id="recoveryList"></pre>
+            <button id="downloadRecovery" type="button">Download codes</button>
+            <button id="savedRecovery" type="button" class="secondary">I've saved them</button>
+        </div>
+    </section>
+    <section>
+        <h3>Change password</h3>
+        <form id="passwordForm" class="account-form">
+            <label>Current password<input id="currentPassword" type="password" autocomplete="current-password" required maxlength="256"></label>
+            <label>New password<input id="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required></label>
+            <label>Confirm new password<input id="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required></label>
+            <label data-factor hidden>Authenticator or recovery code<input id="passwordCode" autocomplete="one-time-code" maxlength="32"></label>
+            <button type="submit">Change password</button>
+        </form>
+    </section>
+    <section>
+        <h3>Other sessions</h3><p class="hint">Sign out every other browser and device. This session will stay signed in.</p>
+        <form id="sessionsForm" class="account-form">
+            <label>Current password<input id="sessionPassword" type="password" autocomplete="current-password" maxlength="256" required></label>
+            <label data-factor hidden>Authenticator or recovery code<input id="sessionCode" autocomplete="one-time-code" maxlength="32"></label>
+            <button type="submit" class="secondary">Sign out other sessions</button>
+        </form>
+    </section>
+</dialog>
+<main hidden>
 	<header class="top">
 		<div class="narrow">
 			<h1>Email Checker</h1>
@@ -311,7 +416,10 @@
 </main>
 <div id="tip" class="tip" role="tooltip"></div>
 
+<script src="/account.js"></script>
 <script>
+(async () => {
+    const signedInAccount = await window.accountReady;
 	const $ = id => document.getElementById(id);
 	const EXPLAIN = {
 		safe: "The mailbox exists and accepts email.",
@@ -329,6 +437,7 @@
 		return `<span class="${ok ? "yes" : "no"}">${v ? "Yes" : "No"}</span>`;
 	}
 	function store(key, value) {
+		key = signedInAccount ? `account.${signedInAccount.id}.${key}` : key;
 		try {
 			if (value === undefined) return JSON.parse(localStorage.getItem(key) || "null");
 			localStorage.setItem(key, JSON.stringify(value));
@@ -349,7 +458,7 @@
 		return m ? `${h} h ${m} min` : `${h} h`;
 	}
 	async function api(path, options) {
-		const res = await fetch(path, options);
+		const res = await window.accountFetch(path, options);
 		const text = await res.text();
 		let body = null;
 		try { body = JSON.parse(text); } catch (_) {}
@@ -435,7 +544,7 @@
 		btn.textContent = "Checking…";
 		out.innerHTML = `<div class="card">Checking <b>${esc(email)}</b>…</div>`;
 		try {
-			const res = await fetch("/api/check", {
+			const res = await window.accountFetch("/api/check", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ to_email: email })
@@ -1097,6 +1206,7 @@
 	// ---- Start-up ----
 	renderRuns();
 	if (runs.length) openRun(runs[0].id, false);
+})();
 </script>
 </body>
 </html>

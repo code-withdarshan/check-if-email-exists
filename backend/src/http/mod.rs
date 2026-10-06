@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub mod account;
 pub(crate) mod csv;
 mod error;
 mod health;
@@ -40,6 +41,7 @@ pub fn create_routes(
 	let pg_pool = config.get_pg_pool();
 
 	version::get::get_version()
+		.or(account::routes(Arc::clone(&config)))
 		.or(health::get_health(Arc::clone(&config)))
 		.or(v0::check_email::post::post_check_email(Arc::clone(&config)))
 		// The 3 following routes will 404 if o is None.
@@ -64,6 +66,7 @@ pub fn create_routes(
 		.or(v1::self_check::v1_get_self_check(Arc::clone(&config)))
 		.or(v1::bulk::get_results::v1_get_bulk_job_results(config))
 		.recover(handle_rejection)
+		.with(warp::reply::with::header("Cache-Control", "no-store"))
 }
 
 /// Runs the Warp server.
@@ -117,6 +120,9 @@ pub const REACHER_SECRET_HEADER: &str = "x-reacher-secret";
 /// Warp filter to check that the header secret is correct, if the header is
 /// set in the config.
 pub fn check_header(config: Arc<BackendConfig>) -> warp::filters::BoxedFilter<()> {
+	if config.accounts.enabled {
+		return account::identity(config).map(|_| ()).untuple_one().boxed();
+	}
 	if let Some(secret) = config.header_secret.clone() {
 		if secret.is_empty() {
 			return warp::any().boxed();

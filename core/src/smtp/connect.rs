@@ -52,12 +52,42 @@ fn ipv4_first(mut addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
 
 /// Opens a TCP connection to a mail server, trying each of its addresses.
 pub(crate) async fn connect_tcp(host: &str, port: u16) -> std::io::Result<TcpStream> {
+	connect_tcp_restricted(host, port, false).await
+}
+
+fn public_destination(ip: std::net::IpAddr) -> bool {
+	match ip {
+		std::net::IpAddr::V4(ip) => crate::self_check::is_public_ipv4(ip),
+		std::net::IpAddr::V6(ip) => {
+			let s = ip.segments();
+			// Only global unicast; exclude protocol assignments, documentation,
+			// 6to4 and mapped/translation addresses that could reach private IPv4.
+			s[0] & 0xe000 == 0x2000
+				&& !(s[0] == 0x2001 && (s[1] < 0x200 || s[1] == 0xdb8))
+				&& s[0] != 0x2002
+				&& !(s[0] == 0x3fff && s[1] < 0x1000)
+		}
+	}
+}
+
+async fn connect_tcp_restricted(
+	host: &str,
+	port: u16,
+	public_only: bool,
+) -> std::io::Result<TcpStream> {
 	let addrs = ipv4_first(tokio::net::lookup_host((host, port)).await?.collect());
 	let mut last_error = std::io::Error::new(
 		std::io::ErrorKind::NotFound,
 		format!("{host} has no IP address"),
 	);
 	for addr in addrs {
+		if public_only && !public_destination(addr.ip()) {
+			last_error = std::io::Error::new(
+				std::io::ErrorKind::PermissionDenied,
+				"Private SMTP destination is not allowed",
+			);
+			continue;
+		}
 		match TcpStream::connect(addr).await {
 			Ok(stream) => return Ok(stream),
 			Err(err) => last_error = err,
@@ -109,6 +139,28 @@ async fn connect_to_smtp_host(
 
 	let stream: BufStream<Box<dyn AsyncReadWrite>> = match &verif_method.proxy {
 		Some(proxy) => {
+			// Resolve and pin the destination before handing it to SOCKS, so
+			// a second DNS lookup cannot redirect a public account to a private IP.
+			let destination = if verif_method.config.public_network_only {
+				let addrs = ipv4_first(
+					tokio::net::lookup_host((clean_host.as_str(), verif_method.config.smtp_port))
+						.await?
+						.collect(),
+				);
+				addrs
+					.into_iter()
+					.find(|addr| public_destination(addr.ip()))
+					.ok_or_else(|| {
+						std::io::Error::new(
+							std::io::ErrorKind::PermissionDenied,
+							"No public SMTP destination",
+						)
+					})?
+					.ip()
+					.to_string()
+			} else {
+				clean_host.clone()
+			};
 			let mut config = Config::default();
 			if let Some(timeout_ms) = proxy.timeout_ms {
 				config.set_connect_timeout(timeout_ms / 1000);
@@ -118,7 +170,7 @@ async fn connect_to_smtp_host(
 				if let (Some(username), Some(password)) = (&proxy.username, &proxy.password) {
 					Socks5Stream::connect_with_password(
 						(proxy.host.as_ref(), proxy.port),
-						clean_host.clone(),
+						destination.clone(),
 						verif_method.config.smtp_port,
 						username.clone(),
 						password.clone(),
@@ -128,7 +180,7 @@ async fn connect_to_smtp_host(
 				} else {
 					Socks5Stream::connect(
 						(proxy.host.as_ref(), proxy.port),
-						clean_host.clone(),
+						destination.clone(),
 						verif_method.config.smtp_port,
 						config,
 					)
@@ -140,7 +192,11 @@ async fn connect_to_smtp_host(
 			// A dead host fails fast here, leaving time to try the next MX.
 			let tcp_stream = tokio::time::timeout(
 				CONNECT_TIMEOUT,
-				connect_tcp(&clean_host, verif_method.config.smtp_port),
+				connect_tcp_restricted(
+					&clean_host,
+					verif_method.config.smtp_port,
+					verif_method.config.public_network_only,
+				),
 			)
 			.await
 			.map_err(|_| {

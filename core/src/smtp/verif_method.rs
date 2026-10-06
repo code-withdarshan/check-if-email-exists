@@ -142,6 +142,7 @@ impl VerifMethod {
 				smtp_port,
 				smtp_timeout,
 				retries,
+				public_network_only: false,
 			}),
 			hotmailb2b: HotmailB2BVerifMethod::Smtp(VerifMethodSmtpConfig {
 				proxy: proxy_id.clone(),
@@ -150,6 +151,7 @@ impl VerifMethod {
 				smtp_port,
 				smtp_timeout,
 				retries,
+				public_network_only: false,
 			}),
 			mimecast: MimecastVerifMethod::Smtp(VerifMethodSmtpConfig {
 				proxy: proxy_id.clone(),
@@ -158,6 +160,7 @@ impl VerifMethod {
 				smtp_port,
 				smtp_timeout,
 				retries,
+				public_network_only: false,
 			}),
 			proofpoint: ProofpointVerifMethod::Smtp(VerifMethodSmtpConfig {
 				proxy: proxy_id.clone(),
@@ -166,6 +169,7 @@ impl VerifMethod {
 				smtp_port,
 				smtp_timeout,
 				retries,
+				public_network_only: false,
 			}),
 			everything_else: EverythingElseVerifMethod::Smtp(VerifMethodSmtpConfig {
 				proxy: proxy_id,
@@ -174,6 +178,7 @@ impl VerifMethod {
 				smtp_port,
 				smtp_timeout,
 				retries,
+				public_network_only: false,
 			}),
 			..Default::default()
 		}
@@ -390,6 +395,8 @@ impl Default for EverythingElseVerifMethod {
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct VerifMethodSmtpConfig {
+	/// Restrict SMTP destinations to public IP addresses, including through proxies.
+	pub public_network_only: bool,
 	/// Email to use in the `MAIL FROM:` SMTP command.
 	///
 	/// Defaults to "reacher.email@gmail.com", which is an unused addressed
@@ -435,6 +442,7 @@ impl Default for VerifMethodSmtpConfig {
 			smtp_port: 25,
 			smtp_timeout: None,
 			retries: 1,
+			public_network_only: false,
 		}
 	}
 }

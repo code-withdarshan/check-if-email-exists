@@ -31,6 +31,8 @@ use crate::http::{check_header, ReacherResponseError};
 /// The request body for the `POST /v0/check_email` endpoint.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct CheckEmailRequest {
+	#[serde(skip)]
+	pub public_network_only: bool,
 	pub to_email: String,
 	pub from_email: Option<String>,
 	pub hello_name: Option<String>,
@@ -60,6 +62,25 @@ impl CheckEmailRequest {
 				));
 			}
 		}
+		Ok(())
+	}
+
+	/// Public accounts cannot control network destinations or provider methods.
+	pub fn restrict_account(&mut self) -> Result<(), ReacherResponseError> {
+		if self.proxy.is_some()
+			|| self.smtp_port.is_some()
+			|| self.smtp_timeout.is_some()
+			|| self.hello_name.is_some()
+			|| self.from_email.is_some()
+			|| self.yahoo_verif_method.is_some()
+			|| self.hotmailb2c_verif_method.is_some()
+		{
+			return Err(ReacherResponseError::new(
+				http::StatusCode::FORBIDDEN,
+				"Connection overrides require machine API access.",
+			));
+		}
+		self.public_network_only = true;
 		Ok(())
 	}
 
@@ -145,6 +166,11 @@ impl CheckEmailRequest {
 			);
 		}
 
+		if self.public_network_only {
+			for smtp in verif_method.smtp_configs_mut() {
+				smtp.public_network_only = true;
+			}
+		}
 		CheckEmailInput {
 			to_email: self.to_email.clone(),
 			verif_method,

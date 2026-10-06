@@ -31,7 +31,7 @@ use warp::Filter;
 
 use super::with_worker_db;
 use crate::config::BackendConfig;
-use crate::http::check_header;
+use crate::http::account;
 use crate::http::v0::check_email::post::with_config;
 use crate::http::CheckEmailRequest;
 use crate::http::ReacherResponseError;
@@ -54,10 +54,18 @@ struct Response {
 }
 
 async fn http_handler(
+	owner: Option<uuid::Uuid>,
 	config: Arc<BackendConfig>,
 	pg_pool: PgPool,
 	body: Request,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+	if owner.is_some() && body.webhook.is_some() {
+		return Err(ReacherResponseError::new(
+			StatusCode::FORBIDDEN,
+			"Webhooks require machine API access.",
+		)
+		.into());
+	}
 	if body.input.is_empty() {
 		return Err(ReacherResponseError::new(StatusCode::BAD_REQUEST, "Empty input").into());
 	}
@@ -74,14 +82,11 @@ async fn http_handler(
 	}
 
 	// create job entry
-	let rec = sqlx::query!(
-		r#"
-		INSERT INTO v1_bulk_job (total_records)
-		VALUES ($1)
-		RETURNING id
-		"#,
-		body.input.len() as i32
+	let job_id: i32 = sqlx::query_scalar(
+		"INSERT INTO v1_bulk_job (total_records, owner_id) VALUES ($1, $2) RETURNING id",
 	)
+	.bind(body.input.len() as i32)
+	.bind(owner)
 	.fetch_one(&pg_pool)
 	.await
 	.map_err(ReacherResponseError::from)?;
@@ -102,13 +107,14 @@ async fn http_handler(
 		.try_for_each_concurrent(10, |to_email| async {
 			let input = CheckEmailRequest {
 				to_email,
+				public_network_only: owner.is_some(),
 				..Default::default()
 			}
 			.to_check_email_input(Arc::clone(&config));
 
 			let task = CheckEmailTask {
 				input,
-				job_id: CheckEmailJobId::Bulk(rec.id),
+				job_id: CheckEmailJobId::Bulk(job_id),
 				webhook: webhook.clone(),
 				task_id: Some(uuid::Uuid::new_v4()),
 			};
@@ -125,10 +131,10 @@ async fn http_handler(
 		})
 		.await
 		.map_err(|e| {
-			error!(target: LOG_TARGET, job_id=rec.id, error=%e, "Bulk job only partially queued");
+			error!(target: LOG_TARGET, job_id=job_id, error=%e, "Bulk job only partially queued");
 			ReacherResponseError::new(
 				StatusCode::INTERNAL_SERVER_ERROR,
-				format!("Job {} was only partially queued: {}", rec.id, e),
+				format!("Job {} was only partially queued: {}", job_id, e),
 			)
 		})?;
 
@@ -137,7 +143,7 @@ async fn http_handler(
 		queue = CHECK_EMAIL_QUEUE,
 		"Added {n} emails",
 	);
-	Ok(warp::reply::json(&Response { job_id: rec.id }))
+	Ok(warp::reply::json(&Response { job_id: job_id }))
 }
 
 /// Publish a task to the "check_email" queue.
@@ -194,7 +200,7 @@ pub fn v1_create_bulk_job(
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
 	warp::path!("v1" / "bulk")
 		.and(warp::post())
-		.and(check_header(Arc::clone(&config)))
+		.and(account::identity(Arc::clone(&config)))
 		.and(with_config(Arc::clone(&config)))
 		.and(with_worker_db(config))
 		// When accepting a body, we want a JSON body (and to reject huge

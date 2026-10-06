@@ -31,7 +31,7 @@ use warp::{http, Filter};
 use crate::config::BackendConfig;
 use crate::http::v0::check_email::post::{with_config, CheckEmailRequest};
 use crate::http::v1::bulk::post::publish_task;
-use crate::http::{check_header, ReacherResponseError};
+use crate::http::{account, ReacherResponseError};
 use crate::storage::commercial_license_trial::send_to_reacher;
 use crate::worker::consume::MAX_QUEUE_PRIORITY;
 use crate::worker::do_work::{CheckEmailJobId, CheckEmailTask};
@@ -184,9 +184,13 @@ async fn handle_with_worker(
 
 /// The main endpoint handler that implements the logic of this route.
 async fn http_handler(
+	owner: Option<uuid::Uuid>,
 	config: Arc<BackendConfig>,
-	body: CheckEmailRequest,
+	mut body: CheckEmailRequest,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+	if owner.is_some() {
+		body.restrict_account()?;
+	}
 	body.validate()?;
 
 	// In direct mode this process sends the SMTP traffic, so reserve throttle
@@ -236,7 +240,7 @@ pub fn v1_check_email(
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
 	warp::path!("v1" / "check_email")
 		.and(warp::post())
-		.and(check_header(Arc::clone(&config)))
+		.and(account::identity(Arc::clone(&config)))
 		.and(with_config(config.clone()))
 		// When accepting a body, we want a JSON body (and to reject huge
 		// payloads)...

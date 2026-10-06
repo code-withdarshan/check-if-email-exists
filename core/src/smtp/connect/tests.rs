@@ -492,7 +492,10 @@ async fn namecheap_unverified_recipient_is_invalid_and_not_catch_all() {
 	const UNVERIFIED: &str = "450 4.1.1 <x@example.com>: Recipient address rejected: unverified address: Mailbox might be disabled, full, or may not exist on the server. Reason: JFE030050\r\n";
 	let (result, _, _) = verify(
 		"example.com",
-		vec![vec![Reply::Text(UNVERIFIED), Reply::Text("250 2.1.5 Ok\r\n")]],
+		vec![vec![
+			Reply::Text(UNVERIFIED),
+			Reply::Text("250 2.1.5 Ok\r\n"),
+		]],
 		Duration::from_secs(2),
 	)
 	.await;
@@ -585,9 +588,16 @@ async fn catch_all_probe_address_is_stable_per_domain() {
 	let first = catch_all_local_part("Example.com");
 	assert_eq!(first, catch_all_local_part("example.com"));
 	assert_eq!(first.len(), 15);
-	assert!(first.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+	assert!(first
+		.chars()
+		.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
 	assert_ne!(first, catch_all_local_part("example.org"));
-	let (_, _, commands) = verify("example.com", vec![vec![Reply::Text(ACCEPTED)]], Duration::from_secs(2)).await;
+	let (_, _, commands) = verify(
+		"example.com",
+		vec![vec![Reply::Text(ACCEPTED)]],
+		Duration::from_secs(2),
+	)
+	.await;
 	assert!(commands.contains(&format!("RCPT TO:<{first}@example.com>")));
 }
 
@@ -756,14 +766,24 @@ async fn host_that_answered_a_recipient_is_final() {
 
 #[test]
 fn mail_servers_are_tried_over_ipv4_first() {
-	let addrs: Vec<std::net::SocketAddr> = ["[2001:db8::1]:25", "192.0.2.1:25", "[2001:db8::2]:25", "192.0.2.2:25"]
-		.iter()
-		.map(|a| a.parse().unwrap())
-		.collect();
+	let addrs: Vec<std::net::SocketAddr> = [
+		"[2001:db8::1]:25",
+		"192.0.2.1:25",
+		"[2001:db8::2]:25",
+		"192.0.2.2:25",
+	]
+	.iter()
+	.map(|a| a.parse().unwrap())
+	.collect();
 	let ordered: Vec<String> = ipv4_first(addrs).iter().map(|a| a.to_string()).collect();
 	assert_eq!(
 		ordered,
-		["192.0.2.1:25", "192.0.2.2:25", "[2001:db8::1]:25", "[2001:db8::2]:25"]
+		[
+			"192.0.2.1:25",
+			"192.0.2.2:25",
+			"[2001:db8::1]:25",
+			"[2001:db8::2]:25"
+		]
 	);
 }
 
@@ -817,4 +837,36 @@ async fn known_catch_all_domain_skips_the_smtp_conversation() {
 	)
 	.await;
 	assert!(!crate::smtp::catch_all_cache::is_known_on_any_route(other));
+}
+
+#[tokio::test]
+async fn public_accounts_cannot_connect_to_local_smtp() {
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let port = listener.local_addr().unwrap().port();
+	let error = super::connect_tcp_restricted("127.0.0.1", port, true)
+		.await
+		.unwrap_err();
+	assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_millis(30), listener.accept())
+			.await
+			.is_err()
+	);
+	for ip in [
+		"127.0.0.1",
+		"10.1.2.3",
+		"169.254.169.254",
+		"100.64.0.1",
+		"::1",
+		"fc00::1",
+		"fe80::1",
+		"::ffff:127.0.0.1",
+		"64:ff9b::7f00:1",
+		"2002:7f00:1::",
+	] {
+		assert!(!super::public_destination(ip.parse().unwrap()), "{}", ip);
+	}
+	for ip in ["8.8.8.8", "2606:4700:4700::1111"] {
+		assert!(super::public_destination(ip.parse().unwrap()));
+	}
 }

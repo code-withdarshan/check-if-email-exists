@@ -1,6 +1,6 @@
 # Single-server deployment
 
-Runs the verification backend and a login-protected "Email Checker" web page with Docker Compose. The page does single checks and bulk runs (paste a list or upload a CSV). Bulk runs are queued on the server (RabbitMQ, results in PostgreSQL), so they keep going after the page is closed.
+Runs the verification backend and a account-protected "Email Checker" web page with Docker Compose. The page does single checks and bulk runs (paste a list or upload a CSV). Bulk runs are queued on the server (RabbitMQ, results in PostgreSQL), so they keep going after the page is closed.
 
 ## Requirements
 
@@ -19,17 +19,14 @@ Run these from the `deploy/` directory.
 
    ```sh
    cp .env.example .env
-   # then set REACHER_SECRET (openssl rand -hex 32) and
+   # then set REACHER_SECRET and ACCOUNT_ENCRYPTION_KEY (openssl rand -hex 32 each),
+   # PUBLIC_ORIGIN to your exact HTTPS origin (no trailing slash), and
    # QUEUE_PASSWORD and DB_PASSWORD (openssl rand -hex 24 each)
    ```
 
-2. Create the login for the web page (replace `admin` and the password):
-
-   ```sh
-   docker run --rm httpd:alpine htpasswd -nbB admin 'choose-a-strong-password' > htpasswd
-   ```
-
-   Add more users by appending more lines. `.env` and `htpasswd` are ignored by git.
+2. Configure HTTPS forwarding to this server and set `PUBLIC_ORIGIN` to the browser origin.
+   Keep `SECURE_COOKIES=true`. For local development only, use
+   `PUBLIC_ORIGIN=http://localhost:8090` and `SECURE_COOKIES=false`.
 
 3. Build and start:
 
@@ -37,15 +34,24 @@ Run these from the `deploy/` directory.
    docker compose up -d --build
    ```
 
-   The page is at `http://127.0.0.1:8090` on the server and asks for the login.
+   The page listens at `http://127.0.0.1:8090` behind your HTTPS proxy. Open the
+   configured public origin and choose **Create an account**. Anyone can register.
+   Use **Account & security** to add an authenticator by QR code or manual setup
+   key, save recovery codes, change your password, and sign out other sessions.
+
+   Existing Basic Auth/htpasswd credentials are not migrated. Back up the database
+   before upgrading. Preserve `ACCOUNT_ENCRYPTION_KEY` across restarts and deploys.
+   See [account configuration and security](../docs/self-hosting/accounts.md).
 
 ## Making it reachable
 
-The page only listens on `127.0.0.1` by default. Put HTTPS in front of it, because basic-auth passwords travel in every request:
+The page only listens on `127.0.0.1` by default. Put HTTPS in front of it to protect passwords and session cookies:
 
 - **Cloudflare quick tunnel** (no account, URL changes on restart):
   `docker compose --profile tunnel up -d`, then read the URL with
-  `docker compose logs tunnel | grep trycloudflare.com`.
+  `docker compose logs tunnel | grep trycloudflare.com`. Set that URL as
+  `PUBLIC_ORIGIN` and recreate the backend before signing in. A stable named
+  tunnel/domain avoids updating the origin when the quick-tunnel URL changes.
 - **Your own domain:** a Cloudflare named tunnel, or a reverse proxy with TLS
   (Caddy, nginx, Traefik) forwarding to `127.0.0.1:8090`.
 
@@ -58,7 +64,7 @@ Only set `UI_BIND=0.0.0.0` if HTTPS is already handled in front of the server.
 - Health: `docker compose ps` shows the backend as `healthy` once `GET /health` succeeds.
 - Stop: `docker compose down`.
 - Rate limits: `MAX_PER_MINUTE` and `MAX_PER_DAY` in `.env`. Keep them low on a single IP. They cover single checks and bulk runs together; bulk jobs over the daily limit wait in the queue and resume when it resets. The page shows how much of the day's limit is used (`GET /v1/usage`).
-- Bulk runs: the list of runs is kept in each browser; the results are stored in the `db` volume. `docker compose down -v` deletes them.
+- Bulk runs: the list of runs is kept per account in each browser; job ownership, accounts and results are stored in the `db-data` volume. `docker compose down -v` deletes them.
 
 ## Known limitations
 

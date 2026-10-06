@@ -36,6 +36,8 @@ use tracing::warn;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BackendConfig {
+	#[serde(default)]
+	pub accounts: crate::http::account::AccountConfig,
 	/// Deadline for verification and queue-backed HTTP calls, in seconds.
 	#[serde(default = "default_request_timeout")]
 	pub request_timeout: u64,
@@ -106,6 +108,7 @@ impl BackendConfig {
 	/// Create an empty BackendConfig. This is useful for testing purposes.
 	pub fn empty() -> Self {
 		Self {
+			accounts: Default::default(),
 			request_timeout: default_request_timeout(),
 			max_concurrency: default_max_concurrency(),
 			verification_slots: default_verification_slots(),
@@ -210,6 +213,10 @@ impl BackendConfig {
 	/// Attempt connection to the Postgres database and RabbitMQ. Also populates
 	/// the internal `pg_pool` and `channel` fields with the connections.
 	pub async fn connect(&mut self) -> Result<(), anyhow::Error> {
+		self.accounts.validate()?;
+		if self.accounts.enabled && !matches!(self.storage, Some(StorageConfig::Postgres(_))) {
+			bail!("Accounts require PostgreSQL storage");
+		}
 		match &self.storage {
 			Some(StorageConfig::Postgres(config)) => {
 				let storage = PostgresStorage::new(&config.db_url, config.extra.clone())
@@ -556,6 +563,7 @@ type = "smtp"
 				hello_name: "email.com".to_string(),
 				smtp_port: 465,
 				retries: 3,
+				public_network_only: false,
 				proxy: Some("proxy1".to_string()),
 				smtp_timeout: Some(Duration::from_secs(23)),
 			})
@@ -568,6 +576,7 @@ type = "smtp"
 				hello_name: "gmail.com".to_string(),
 				smtp_port: 25,
 				retries: 1,
+				public_network_only: false,
 				proxy: None,
 				smtp_timeout: None,
 			})

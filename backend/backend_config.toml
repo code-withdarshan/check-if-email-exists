@@ -1,5 +1,12 @@
 # Backend configuration.
 
+# Account login is optional for standalone API installations. The deployment
+# compose file enables it. See docs/self-hosting/accounts.md for setup.
+# RCH__ACCOUNTS__ENABLED=true
+# RCH__ACCOUNTS__PUBLIC_ORIGIN=https://verifier-app.iqonicdesign.net
+# RCH__ACCOUNTS__ENCRYPTION_KEY=<openssl rand -hex 32>
+# PostgreSQL storage is required. Public registration is available when enabled.
+
 # Name to identify the backend.
 #
 # Env variable: RCH__BACKEND_NAME

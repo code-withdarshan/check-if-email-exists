@@ -46,6 +46,7 @@ impl BackwardCompatYahooVerifMethod {
 					None
 				},
 				retries,
+				public_network_only: false,
 			}),
 		}
 	}
@@ -83,6 +84,7 @@ impl BackwardCompatHotmailB2CVerifMethod {
 						None
 					},
 					retries,
+					public_network_only: false,
 				})
 			}
 		}
